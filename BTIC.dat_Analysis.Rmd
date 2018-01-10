@@ -1,0 +1,297 @@
+BTIC.dat Differential Methylation Analysis
+========================================================
+## By: Sumaiya Islam
+## Date: August 30, 2016
+
+### Script contents:
+- Differential methylation analysis of BTIC.dat_Combat 
+
+### A. Set up working directory & packages
+
+
+We will initially set our working directory and load our libraries.
+```{r}
+setwd("~/BTIC_GBM")
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(xtable)
+library(ggplot2)
+library(reshape)
+library(mclust)
+library(limma)
+library(reshape)
+library(ggplot2)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+library(sva)
+library(rama)
+```
+
+### B. Load filtered dataset. 
+
+We will load the ComBat-corrected cancer.dat dataset and then filter out the technical replicates to yield a final dataset comprised of 37 pairs of matched BTIC and tumour methylation profiles. 
+
+```{r}
+# load ComBat-corrected data
+# load(file="BTIC.dat_Combat.RData") # Combat corrected data
+# dim(BTIC.dat_Combat) # probes = 420195, samples = 44
+# 
+# # filter out all technical replicates
+# reps<-c("67_cell_rep", "147_cell_rep", "73_cell_rep", "12_cell_rep")
+# BTIC.dat.cor<- BTIC.dat_Combat[,!(sampleNames(BTIC.dat_Combat)) %in% reps]
+# dim(BTIC.dat.cor) # probes = 420,195, samples = 40
+# sampleNames(BTIC.dat.cor)
+# 
+# # add subtype to meta data (according to Yaoqing, all BTIC samples are classical subtype except for 47_cell, 84_cell, 92_cell, and 142_cell that show proneural subtype). 
+# meta.BTIC<-pData(BTIC.dat.cor)
+# rownames(meta.BTIC) # check which cell lines are in final dataset
+# meta.BTIC$Subtype<-c(rep("classical", times = 15), "proneural", rep("classical", times = 24))
+# meta.BTIC$Subtype<-as.factor(meta.BTIC$Subtype)
+# pData(BTIC.dat.cor)<-meta.BTIC
+
+# save final corrected BTIC dataset
+# save(BTIC.dat.cor, file = "BTIC.dat.cor.RData")
+load("BTIC.dat.cor.RData")
+revised.meta<-read.csv(file="Meta_Data_BTIC.dat_Jan_2017.csv", header = TRUE, row.names = 1)
+revised.meta$Sample<-rownames(revised.meta)
+identical(colnames(exprs(BTIC.dat.cor)), revised.meta$Sample) # TRUE
+pData(BTIC.dat.cor)<-revised.meta
+dim(BTIC.dat.cor)
+```
+
+### C. Differential Methylation Analysis
+
+#### PCA: Heat scree plot function
+```{r}
+### Function of association meta variable with PC (ANOVA)
+heat_scree_plot<-function(Loadings, Importance, Num, Order){
+  adjust<-1-Importance[1]
+  pca_adjusted<-Importance[2:length(Importance)]/adjust
+  pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted)))
+  
+  scree<-ggplot(pca_df[which(pca_df$PC<Num),],aes(PC,adjusted_variance))+geom_bar(stat = "identity",color="black",fill="grey")+theme_bw()+
+        theme(axis.text = element_text(size =12),
+              axis.title = element_text(size =15),
+              plot.margin=unit(c(1,1.5,0.2,2.25),"cm"))+ylab("Variance")+
+    scale_x_continuous(breaks = seq(1,Num,1))
+  
+  #### Heat
+  ## correlate meta with PCS
+  ## Run anova of each PC on each meta data variable
+
+  aov_PC_meta<-lapply(1:ncol(meta_categorical), function(covar) sapply(1:ncol(Loadings), function(PC) summary(aov(Loadings[,PC]~meta_categorical[,covar]))[[1]]$"Pr(>F)"[1]))
+  cor_PC_meta<-lapply(1:ncol(meta_continuous), function(covar) sapply(1:ncol(Loadings), function(PC) (cor.test(Loadings[,PC],as.numeric(meta_continuous[,covar]),alternative = "two.sided", method="spearman", na.action=na.omit)$p.value)))
+  names(aov_PC_meta)<-colnames(meta_categorical)
+ names(cor_PC_meta)<-colnames(meta_continuous)
+  aov_PC_meta<-do.call(rbind, aov_PC_meta)
+ cor_PC_meta<-do.call(rbind, cor_PC_meta)
+ aov_PC_meta<-rbind(aov_PC_meta, cor_PC_meta)
+  aov_PC_meta<-as.data.frame(aov_PC_meta)
+  #adjust
+  aov_PC_meta_adjust<-aov_PC_meta[,2:ncol(aov_PC_meta)]
+  
+    
+  #reshape
+  avo<-aov_PC_meta_adjust[,1:(Num-1)]
+  avo_heat_num<-apply(avo,2, as.numeric)
+  avo_heat<-as.data.frame(avo_heat_num)
+  colnames(avo_heat)<-sapply(1:(Num-1), function(x) paste(x, sep=""))
+  avo_heat$meta<-rownames(avo)
+  avo_heat_melt<-melt(avo_heat, id=c("meta"))
+  
+  # cluster meta data
+  ord <- Order
+  meta_var_order<-unique(avo_heat_melt$meta)[rev(ord)]
+  avo_heat_melt$meta <- factor(avo_heat_melt$meta, levels = meta_var_order)
+  
+  # color if sig
+  avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]>=0.9){">=0.9"}else{
+   if(avo_heat_melt$value[x]>=0.5){">=0.5"}else{
+     if(avo_heat_melt$value[x]>=0.1){">=0.1"}else{"<0.1"}}})
+  avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]<=0.001){"<=0.001"}else{
+     if(avo_heat_melt$value[x]<=0.01){"<=0.01"}else{
+       if(avo_heat_melt$value[x]<=0.05){"<=0.05"}else{">0.05"}}})
+  
+  heat<-ggplot(avo_heat_melt, aes(variable,meta, fill = Pvalue)) +
+  geom_tile(color = "black",size=0.5) +
+  theme_gray(8)+scale_fill_manual(values=c("#084594","#4292c6","#9ecae1","#deebf7"))+
+      theme(axis.text = element_text(size =10, color="black"),
+            axis.text.x = element_text(),
+          axis.title = element_text(size =15),
+          legend.text = element_text(size =14),
+          legend.title = element_text(size =12),
+          legend.position = c(1, 0), legend.justification = c(1,0),
+          plot.margin=unit(c(0,2.25,1,1),"cm"))+
+    xlab("Principal Component")+ylab(NULL)
+  
+  grid.arrange(scree, heat, ncol=1)
+}
+
+# run PCA
+betas.BTIC<-betas(BTIC.dat.cor)
+
+PCA_full<-princomp(betas.BTIC[complete.cases(betas.BTIC),])
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+
+#Specify which covariates are categorical and/or continuous
+meta<-pData(BTIC.dat.cor)
+meta_categorical<-meta[,c("Diagnosis", "Parental_Tumour_Subtype", "Subtype", "Batch", "Sentrix_ID", "Row", "Sex", "Subtype")]  # input column numbers in meta that contain categorical variables
+meta_continuous<- meta[,c("Age")]
+meta_continuous<-data.frame(meta_continuous)
+colnames(meta_continuous)<-c("Age")
+colnames(meta_categorical)<-c("Diagnosis","Parental Tumour Subtype", "Subtype", "Batch", "Chip", "Row", "Sex", "BTIC Subtype")
+# Specify the number of PCs you want shown (usually # of samples in the dataset)
+Num<-20
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-1:9
+
+#Apply function on PCA results, pulls in the meta data and beta values from above and represent as heat scree plot
+heat_scree_plot(Loadings, Importance, Num, Order)
+
+### in ggplot need to adjust for probe offset PC so plot Comp.2 vs Comp.3 to represent PC1 vs PC2
+ggplot(Loadings,aes(Comp.2, Comp.3)) + 
+  geom_point(aes(fill = factor(BTIC.dat.cor$Diagnosis)), colour="black", shape=21, size=5) + 
+  scale_fill_manual(values=c("forestgreen",  "blue"), name="Diagnosis") +
+  theme_bw() +
+  xlab("PC1 (10.2% of the variance)") + 
+  ylab("PC2 (7.6% of the variance)") 
+```
+
+To assess parental tumour subtype classification in BTIC DNA methylation profiles, we will subset down to only samples in which parental tumour subtype is known (since many remain unassigned)
+
+```{r}
+# specify missing values and subset down to just 
+meta<-pData(BTIC.dat.cor)
+meta$Parental_Tumour_Subtype<-as.character(meta$Parental_Tumour_Subtype)
+meta[meta=='NaN'] <- NA
+is.na(meta[,"Parental_Tumour_Subtype"])
+meta.subtype<-meta[complete.cases(meta$Parental_Tumour_Subtype),]
+complete_samples<-as.character(meta.subtype$Sample)
+
+# subset DNA methylation data down to complete_samples
+head(betas.BTIC.subset<-betas.BTIC[,complete_samples])
+identical(colnames(betas.BTIC.subset), rownames(meta.subtype)) # TRUE
+
+# run PCA on subsetted data
+PCA_full<-princomp(betas.BTIC.subset[complete.cases(betas.BTIC.subset),])
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+
+#Specify which covariates are categorical and/or continuous
+meta.subtype$Parental_Tumour_Subtype<-as.factor(meta.subtype$Parental_Tumour_Subtype)
+meta_categorical<-meta[,c("Diagnosis", "Batch", "Sentrix_ID", "Row", "Sex", "Subtype", "Parental_Tumour_Subtype")]  # input column numbers in meta that contain categorical variables
+meta_continuous<- meta[,c("Age")]
+meta_continuous<-data.frame(meta_continuous)
+colnames(meta_continuous)<-c("Age")
+colnames(meta_categorical)<-c("Diagnosis","Batch", "Chip", "Row", "Sex", "BTIC Subtype", "Parental Tumour Subtype")
+# Specify the number of PCs you want shown (usually # of samples in the dataset)
+Num<-32
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-1:8
+
+#Apply function on PCA results, pulls in the meta data and beta values from above and represent as heat scree plot
+heat_scree_plot(Loadings, Importance, Num, Order)
+```
+
+#### Beta Distributions
+```{r}
+# Beta_Data<-betas(BTIC.dat.cor)
+# dim(Beta_Data)
+# Beta_sample<-Beta_Data[sample(1:418740, 10000),] # take a random sample of 10,000 probes to plot distribution, otherwise this plot takes forever for dataset with all probes! 
+# ## Beta distribtuions 
+# Beta_sample_melted<- melt(Beta_sample)
+# #remove NAs before plotting (otherwise get many non-inifnite warnings)
+# Beta_Plot<-Beta_sample_melted[which(!(is.na(Beta_sample_melted$value))),]
+# head(Beta_Plot)
+# #add meta
+# meta<-pData(BTIC.dat.cor)
+# meta$Sample_name<-rownames(meta)
+# Beta_Plot<-merge(Beta_Plot,meta, by.x="X2", by.y="Sample_name")
+# head(Beta_Plot)
+# ggplot(Beta_Plot, aes(value, group=X2, color=Sample_Group))+
+#                    geom_density()+theme_bw()
+```
+
+#### Hierarchical Clustering
+```{r fig.width=10, fig.height=3}
+# Beta_Data<-betas(BTIC.dat.cor)
+# # remove rows with NAs
+# beta_cluster<-Beta_Data[complete.cases(Beta_Data),]
+# identical(colnames(Beta_Data), rownames(meta.BTIC))
+# # Emulate ggplot default colours from beta distributions
+# gg_color_hue <- function(n) {
+#   hues = seq(15, 375, length=n+1)
+#   hcl(h=hues, l=65, c=100)[1:n]
+# }
+# 
+# # plot clustering with color function
+#     plotHclustColors <- function(matrix,leafcolor) {
+#       colnames(matrix) <- leafcolor
+#       d <- dist(t(matrix))
+#       hc <- hclust(d, method = "average") #single, complete, average, ward
+#      # color<-rep(brewer.pal(8,"Dark2"),ceiling(length(unique(leafcolor))/12))
+#      color<-c("#00B0F6", "#F8766D")
+#       labelColors <- color[sample(1:length(color),length(unique(leafcolor)))]
+#       colLab <- function(n) {
+#         if (is.leaf(n)) {
+#           a <- attributes(n)
+#           labCol <- labelColors[which(unique(leafcolor) == a$label)]
+#           attr(n, "nodePar") <- c(a$nodePar, lab.col=labCol)
+#         }
+#         n
+#       }
+#       clusDendro <- dendrapply(as.dendrogram(hc), colLab)
+#       plot(clusDendro)
+#     }
+# 
+# # Plot dendrogram
+# par(cex=0.7)
+# meta$Sample_ID<-rownames(meta)
+# plotHclustColors(beta_cluster, meta.BTIC$Patient_ID) #all samples
+
+
+## Heatmap
+# define colour palette
+BuPu <- colorRampPalette(brewer.pal(10,"RdYlBu")[1:10])(30)
+cor <- cor(betas(BTIC.dat.cor), use = "pairwise.complete.obs")
+# define coloured variables
+str(pData(BTIC.dat.cor))
+colnames(pData(BTIC.dat.cor))
+DiagnosisCol <- as.character (as.numeric(factor(BTIC.dat.cor$Diagnosis)))
+DiagnosisCol <- gsub("1", "forestgreen",  gsub("2", "blue", DiagnosisCol))
+PSubtypeCol<- as.numeric(factor(BTIC.dat.cor$Parental_Tumour_Subtype))
+PSubtypeCol <- gsub("1", "#F8766D",  gsub("2", "#7CAE00", gsub("3", "#00BFC4", gsub("4", "#C77CFF", PSubtypeCol))))
+heatmap.2(cor,
+          trace = "none", col = BuPu, dendrogram = "both",
+          cexRow = 1, margins=c(10,10),RowSideColors = PSubtypeCol,
+          ColSideColors = DiagnosisCol, cexCol = 1, key=TRUE, keysize = 1.5)
+legend("topright",legend = c("gbm", "gbm_r"), 
+    col = c("forestgreen", "blue"), 
+    lty= 1,             
+    lwd = 8            
+)
+
+legend("bottomleft",legend = c("Classical", "Mesenchymal", "Proneural", "Unknown"), 
+    col = c("#F8766D", "#7CAE00", "#00BFC4", "#C77CFF"), 
+    lty= 1,             
+    lwd = 8            
+)
+```
+
+
+### Try hierarchial clustering on only variable probes?

@@ -1,0 +1,264 @@
+Cancer.dat BTIC vs Tumour Hits Annotation to Genes and Assessment of Enrichment of Genomic Content 
+==================================================================================================
+## By: Sumaiya Islam
+## Date: September 18, 2015 
+
+### Script contents:
+- Annotation of probe hits (identified by paired testing of matched BTICs vs Tumour) to underlying gene(s) using updated annotation method first developed by Edgar et al. 2014, Epigenetics & Chromatin
+- Assessment of enrichment of probe hits based on their genomic context (ie CGI, Relation to Gene)
+
+### A. Set up working directory & packages
+
+```{r}
+setwd("~/BTIC_GBM")
+library(ggplot2)
+library(reshape)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+```
+
+### B. Load appropriate dataset
+
+```{r}
+load("BTICvsTumour_Toptable.RData") # toptable from BTIC vs Tumour differential methylation analysis
+
+# pull out hits from toptable based on FDR threshold of 0.001 and delta beta cut-off of 0.2 (delta beta threshold based Bibikova et al. 2011, Genomics, see legend of Figure 5)
+BT.hits<-topT.matched.pairs[which(topT.matched.pairs$adj.P.Val<=0.001 & abs(topT.matched.pairs$dB)>=0.2),] # topTable of hits
+dim(BT.hits) # 65231 hits at FDR <= 0.001 and delta beta threshold of 0.2
+
+load("Gene_CpG_Relations_updatejune2015.RData") # annotations of all 450K probes from Rachel
+dim(Gene_CpG_Relations_update) #688909 features (this is more than 485,512 methylation probes because some probes are mapped to multiple isoforms)
+
+load("Price_annotation.RData") #annotations based on Price et al. 2013 Epigenetics & Chromatin
+annotation$CpG<-rownames(annotation)
+```
+
+### C. Map probe hits to their corresponding genes
+
+Annotation of probe hits is a modified adaption of CGI annotation used in Edgar et al. 2014, Epigenetics & Chromatin. Brief description of annotation (from R. Edgar): There are multiple approaches to associating a CpG with a gene, such as the closest TSS (Price et al. 2013, Epigenetics & Chromatin), presence in a gene’s body or promoter (Bibikova et al. 2011, Genomics). Here, we have used a CpG to gene association definition that allows for mulitple gene features, as well as multiple genes. Our inclusive associations is an attempt to
+capture all possible roles of a CpG in gene regulation. Specifically, Refseq genes were downloaded from UCSC, including all isoforms of a gene. The gene list included 24,047 genes and a total of 33,431 unique transcription units. The 485,512 CpGs on the 450K array associated with 23,018 genes (43.8%
+intragenic, 34.2% promoter, 2.5% 3’ region, 19.5% intergenic).
+
+```{r}
+# associate probe hits to genes
+head(BT.hits.genes<-Gene_CpG_Relations_update[which(Gene_CpG_Relations_update$Probe_ID %in% rownames(BT.hits)),]) # probe hits mapped to genes
+length(unique(BT.hits.genes$Probe_ID)) # should be same as the number of hits (ie 65231)
+length(unique(BT.hits.genes$gene)) # hits map to 12818 genes
+```
+
+### D. Map probe hits to their corresponding genes and generate gene summaries
+
+#### Generate gene summaries of probe hits. Output provides the following:
+-gene = gene name
+-CpG_Associated = # of probe hits associated with that gene
+-CpG_in_Gene = Total # of array probes associated with that gene
+-Enrichment_fromAverage = Total # of array probes associated with that gene divided by the average # of probes per gene on 450K array 
+-Surprise = standardized score of how expected it is that this gene will have significant hits given its coverage on the 450K array. Means: given the coverage of probes for this gene, how surprising is it that this many probe hits for this gene were identified? To compute Surprise score: (CpG_Associated)/(Enrichment_fromAverage) = (# of probe hits )/(# of total array probes for that gene/average # of probes covering a gene on the array).
+-Probe_ID = probe ID 
+-Chromosome_37 = chromosome location of probe according to hg 37 human genome sequence assembly
+-Coordinate_31 = coordinate location of probe according to hg 37 human genome sequence assembly
+-region = genomic context (ie promoter, intragenic, intergenic, 3' region)
+-isoform = gene isoform
+-UCSC_CPG_ISLANDS_NAME = location of CpG island (if probe exists in a CGI) (ie chr6:30312837-30313419)
+-RELATION_TO_UCSC_CPG_ISLAND = relation to CGI (ie CGI, N_shore, S_shore, N_shelf, S_Shelf)
+-P.Value = differential methylation testing p-value from topTable
+-adj.P.Val = differential methylation testing adjusted p-value from topTable (after multiple test correction)
+
+
+```{r}
+
+## using Gene_CpG_Relations_update annotation (from Rachel) compute the number of probes associated with a particular gene and the Enrichment_fromAverage which is the degree to which that gene is covered/represented by probes on the 450K array divided by the average gene coverage on the array (ie average of 25 probes per gene on the 450K array). The higher the Enrichment_fromAverage value, the greater that gene's coverage on the 450K array. 
+
+Overrep<-as.data.frame(tapply(Gene_CpG_Relations_update$Probe_ID, Gene_CpG_Relations_update$gene, length))
+Overrep$Gene<-rownames(Overrep)
+colnames(Overrep)<-c("CpG_number", "Gene")
+Overrep<-Overrep[which(Overrep$Gene!="None"),]
+mean(Overrep$CpG_number, na.rm=T)# 25
+Overrep$Enrichment_fromAverage<-Overrep$CpG_number/mean(Overrep$CpG_number, na.rm=T)
+head(Overrep)
+
+
+## Format_gene_table function which generates a table of gene hits from the probe hits. Inputs for the function include: Gene_CpG_Relations_update_subset = probe hits mapped to genes & topTable.hits = topTable of probe hits with calculated delta beta values
+
+Format_gene_table<-function(Gene_CpG_Relations_update_subset, topTable.hits){
+  print(paste("CpGs Associated: ", length(unique(Gene_CpG_Relations_update_subset$Probe_ID)), sep=""))
+  print(paste("Genes Associated: ", length(unique(Gene_CpG_Relations_update_subset$gene)), sep=""))
+  Overrep_subset<-as.data.frame(tapply(Gene_CpG_Relations_update_subset$Probe_ID, Gene_CpG_Relations_update_subset$gene, length))
+  Overrep_subset$Gene<-rownames(Overrep_subset)
+  colnames(Overrep_subset)<-c("CpG_number", "Gene")
+  Overrep_subset<-Overrep_subset[which(Overrep_subset$Gene!="None"),]
+  Overrep_subset_merge<-merge(Overrep_subset, Overrep, by="Gene")
+  colnames(Overrep_subset_merge)<-c("Gene","CpG_Associated","CpG_in_Gene", "Enrichment_fromAverage")
+  Overrep_subset_merge$Surprise<-Overrep_subset_merge$CpG_Associated/Overrep_subset_merge$Enrichment_fromAverage                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+  Gene_table<-merge(Gene_CpG_Relations_update_subset, Overrep_subset_merge, by.x="gene", by.y="Gene")
+  Gene_table<-merge(Gene_table, annotation[,c(49,50,58)], by.x="Probe_ID", by.y="CpG")
+  pval<-topTable.hits[,c("P.Value", "adj.P.Val", "dB")]
+  pval$CpG<-rownames(topTable.hits)
+  Gene_table<-merge(Gene_table, pval, by.x="Probe_ID", by.y="CpG")
+  Gene_table<-Gene_table[,c(2,7,8,9,10,1,4,3,6,5,11,12,13,14)]
+  Gene_table<-Gene_table[order(-Gene_table$Surprise, Gene_table$gene),]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+  Gene_table}
+
+## generate gene summaries using Format_gene_table function. Output provides the following:
+BT.gene.table<-Format_gene_table(BT.hits.genes, BT.hits)
+head(BT.gene.table)
+# save(BT.gene.table, file = "BTICvsTumour_Gene_Hits.RData")
+# write.csv(BT.gene.table, file="BTICvsTumour_Gene_Hits.csv")
+```
+
+### E. Assess enrichment of genomic context (ie Relation to CGI, gene feature) of probe hits
+
+```{r Genomic_Context_Enrichment_Analysis}
+
+## Hits in Features (all age associated CpGs)
+Feature_Bar_Plot<-function(CpG_list, topTable.all.probes){
+      Genes_correlated_CpGs<-Gene_CpG_Relations_update[which(Gene_CpG_Relations_update$Probe_ID%in%CpG_list),]
+      Genes_correlated_CpGs<-Genes_correlated_CpGs[!duplicated(Genes_correlated_CpGs),]
+      Genes_correlated_CpGs<-Genes_correlated_CpGs[!duplicated(Genes_correlated_CpGs[,c(1,4)]),]#remove duplicate CpG to gene associations
+
+      Gene_hits_regionMeans<-tapply(Genes_correlated_CpGs$Probe_ID, Genes_correlated_CpGs$region, length)
+      Gene_hits_regionMeans<-data.frame(Probe_Count=as.numeric(Gene_hits_regionMeans), Region=names(Gene_hits_regionMeans))
+
+      ## Boot strapping (to see if hits more in feature than expected)
+      bootstrap_genes<-lapply(1:100, function(x){
+        set.seed(x)
+        Hit_number<-length(CpG_list)
+        rnd_CpGs<-rownames(topTable.all.probes)[sample(1:nrow(topTable.all.probes),Hit_number)]
+        Gene_rnd<-Gene_CpG_Relations_update[which(Gene_CpG_Relations_update$Probe_ID%in%rnd_CpGs),]
+        Gene_rnd<-Gene_rnd[!duplicated(Gene_rnd),]
+        Gene_rnd<-Gene_rnd[!duplicated(Gene_rnd[,c(1,4)]),]#remove duplicate CpG to gene associations
+        Gene_rnd_regionMeans<-tapply(Gene_rnd$Probe_ID, Gene_rnd$region, length)
+        Gene_rnd_regionMeans<-data.frame(Probe_Count=as.numeric(Gene_rnd_regionMeans), Region=names(Gene_rnd_regionMeans))
+        Gene_rnd_regionMeans})
+      bootstrap_genes<-do.call(rbind,bootstrap_genes)
+
+      Gene_mean<-tapply(bootstrap_genes$Probe_Count, bootstrap_genes$Region, mean)
+      Gene_sd<-tapply(bootstrap_genes$Probe_Count, bootstrap_genes$Region, sd)
+      Gene_rnd_regionMeans<-data.frame(Probe_Count=as.numeric(Gene_mean), Probe_count_SD=as.numeric(Gene_sd),
+                                        Region=names(Gene_mean))
+      Gene_rnd_regionMeans$Data<-paste("Random CpGs (", length(CpG_list),")", sep="")
+
+      #Combine with real data
+      Gene_hits_regionMeans$Data<-paste("Differential CpGs (", length(CpG_list),")", sep="")  
+      Gene_hits_regionMeans$Probe_count_SD<-0
+      Gene_hits_regionMeans<-rbind(Gene_hits_regionMeans,Gene_rnd_regionMeans)
+      
+      Gene_hits_regionMeans$Color<-sapply(1:nrow(Gene_hits_regionMeans), function(x) {
+        paste(Gene_hits_regionMeans$Region[x],Gene_hits_regionMeans$Data[x], sep=":")})
+      
+      Gene_hits_regionMeans$Region<-factor(Gene_hits_regionMeans$Region,
+                                           levels=c("promoter","intragenic","three_plus","intergenic"))
+
+
+      Gene<-ggplot(Gene_hits_regionMeans, aes(Region, Probe_Count, fill=Color, group=Data))+
+            geom_bar(position=position_dodge(width=0.9),stat="identity", color="black")+theme_bw()+
+            scale_fill_manual(values=c("#999999","#f2f2f2","#e41a1c","#fbb4ae",
+                                       "#377eb8","#b3cde3","#984ea3","#decbe4"))+
+            geom_errorbar(aes(ymax = Probe_Count + Probe_count_SD, ymin=Probe_Count - Probe_count_SD),
+                          width=0.25,position=position_dodge(width=0.9))
+
+## CGI
+      # CpGI
+      CGI<-annotation[,c(58,49,50)]
+
+      Resort_hits<-CGI[which(CGI$CpG%in%CpG_list),] 
+      Resort_hits_featureMeans<-tapply(Resort_hits$CpG, Resort_hits$RELATION_TO_UCSC_CPG_ISLAND, length)
+      Resort_hits_featureMeans<-data.frame(Probe_Count=as.numeric(Resort_hits_featureMeans),
+                                           Feature=names(Resort_hits_featureMeans))
+      levels(Resort_hits_featureMeans$Feature)<-c("None","Island","N_Shelf","N_Shore","S_Shelf","S_Shore")
+
+
+      ## Boot strapping (to see if hits more in feature than expected)
+      bootstrap_CGI<-lapply(1:100, function(x){
+        set.seed(x)
+        Hit_number<-length(CpG_list)
+        rnd_CpGs<-rownames(topTable.all.probes)[sample(1:nrow(topTable.all.probes),Hit_number)]
+        Resort_rnd<-CGI[which(CGI$CpG%in%rnd_CpGs),]
+        Resort_rnd_featureMeans<-tapply(Resort_rnd$CpG, Resort_rnd$RELATION_TO_UCSC_CPG_ISLAND, length)
+        Resort_rnd_featureMeans<-data.frame(Probe_Count=as.numeric(Resort_rnd_featureMeans),
+                                            Feature=names(Resort_rnd_featureMeans))})
+      bootstrap_CGI<-do.call(rbind,bootstrap_CGI)
+
+      CGI_mean<-tapply(bootstrap_CGI$Probe_Count, bootstrap_CGI$Feature, mean)
+      CGI_sd<-tapply(bootstrap_CGI$Probe_Count, bootstrap_CGI$Feature, sd)
+      CGI_rnd_regionMeans<-data.frame(Probe_Count=as.numeric(CGI_mean), Probe_count_SD=as.numeric(CGI_sd),
+                                        Feature=names(CGI_mean))
+      levels(CGI_rnd_regionMeans$Feature)<-c("None","Island","N_Shelf","N_Shore","S_Shelf","S_Shore")
+
+      CGI_rnd_regionMeans$Data<-paste("Random CpGs (", length(CpG_list),")", sep="")
+
+      #Combine with real data
+      Resort_hits_featureMeans$Data<-paste("Differential CpGs (", length(CpG_list),")", sep="")  
+      Resort_hits_featureMeans$Probe_count_SD<-0
+      Resort_hits_featureMeans<-rbind(Resort_hits_featureMeans,CGI_rnd_regionMeans)
+
+      Resort_hits_featureMeans$Feature<-factor(Resort_hits_featureMeans$Feature,
+                                               levels=c("N_Shelf","N_Shore","Island","S_Shore","S_Shelf","None"))
+
+      Resort_hits_featureMeans$Color<-sapply(1:nrow(Resort_hits_featureMeans), function(x) {
+        paste(Resort_hits_featureMeans$Feature[x],Resort_hits_featureMeans$Data[x], sep=":")})
+
+        CGI<-ggplot(Resort_hits_featureMeans, aes(Feature, Probe_Count, fill=Color, group=Data))+
+              geom_bar(position=position_dodge(width=0.9),stat="identity", color="black")+theme_bw()+
+         scale_fill_manual(values=c("#66bd63","#a1d99b","#74add1","#abd9e9","#feb24c","#ffeda0","#999999","#f2f2f2",
+                                    "#74add1","#abd9e9","#feb24c","#ffeda0"))+
+              geom_errorbar(aes(ymax = Probe_Count + Probe_count_SD, ymin=Probe_Count - Probe_count_SD),
+                            width=0.25,position=position_dodge(width=0.9))
+
+    # Plot
+      grid.arrange(Gene, CGI, ncol=1)
+
+
+    ##Statistics (Fisher's Exact Test)
+      Gene_hits_PrbCnt<-Gene_hits_regionMeans$Probe_Count[grep("Differential", Gene_hits_regionMeans$Data)]
+      Gene_rnd_PrbCnt<-Gene_hits_regionMeans$Probe_Count[grep("Random", Gene_hits_regionMeans$Data)]
+      Resort_hits_PrbCnt<-Resort_hits_featureMeans$Probe_Count[grep("Differential", Resort_hits_featureMeans$Data)]
+      Resort_rnd_PrbCnt<-Resort_hits_featureMeans$Probe_Count[grep("Random", Resort_hits_featureMeans$Data)]
+
+      Gene_hits_Percent<-(Gene_hits_PrbCnt/sum(Gene_hits_PrbCnt))*100
+      Gene_rnd_Percent<-(Gene_rnd_PrbCnt/sum(Gene_rnd_PrbCnt))*100
+      Resort_hits_Percent<-(Resort_hits_PrbCnt/sum(Resort_hits_PrbCnt))*100
+      Resort_rnd_Percent<-(Resort_rnd_PrbCnt/sum(Resort_rnd_PrbCnt))*100
+
+    name<-c(as.character(Resort_hits_featureMeans$Feature)[1:6], as.character(Gene_hits_regionMeans$Region)[1:4])
+      Hits<-c(Resort_hits_Percent, Gene_hits_Percent)
+      rnd<-c(Resort_rnd_Percent, Gene_rnd_Percent)
+      Resort_fisher<-lapply(1:length(Resort_hits_Percent), function(x) {
+        data<-matrix(c(Resort_hits_Percent[x], 100-Resort_hits_Percent[x],
+                       Resort_rnd_Percent[x], 100-Resort_rnd_Percent[x]),
+                     ncol=2, byrow=T)
+        fisher.test(round((data/100)*length(CpG_list)))})
+      names(Resort_fisher)<-as.character(Resort_hits_featureMeans$Feature)[1:6]
+      Gene_fisher<-lapply(1:length(Gene_hits_Percent), function(x) {
+        data<-matrix(c(Gene_hits_Percent[x], 100-Gene_hits_Percent[x],
+                       Gene_rnd_Percent[x], 100-Gene_rnd_Percent[x]),
+                     ncol=2, byrow=T)
+        fisher.test(round((data/100)*length(CpG_list)))})
+      names(Gene_fisher)<-as.character(Gene_hits_regionMeans$Region)[1:4]
+      Fisher<-data.frame(Feature=c(names(Resort_fisher), names(Gene_fisher)),
+                         Pval=c(sapply(1:length(Resort_fisher), function(x) round(Resort_fisher[[x]]$p.value,4)),
+                                sapply(1:length(Gene_fisher), function(x) round(Gene_fisher[[x]]$p.value,4))))
+      Fisher$adj.p.val<-c(p.adjust(Fisher$Pval[1:6], method="BH", n=6),
+                    p.adjust(Fisher$Pval[7:10], method="BH", n=4))
+
+      Fisher}
+
+## run function to generate enrichment plots and associated fisher's exact testing
+Feature_Bar_Plot(rownames(BT.hits), topT.matched.pairs)
+```
+
+We can see that for the gene features:
+- probe hits are significantly less enriched in promoter regions than expected by chance (adj.p.val = 0.0000)
+- probe hits are NOT significantly enriched in intragenic regions than expected by chance (adj.p.val = 0.398)
+- probe hits are significantly more enriched in three-plus regions than expected by chance (adj.p.val = 0.0011)
+- probe hits are significantly more enriched in intergenic regions than expected by chance (adj.p.val = 0.0000)
+
+We can see that for the relation of CGI (CpG Island) features:
+- probe hits are significantly less enriched in N_Shelf regions than expected by chance (adj.p.val = 0.0252)
+- probe hits are  significantly more enriched in N_Shore regions than expected by chance (adj.p.val = 0.0000)
+- probe hits are significantly less enriched in CGI regions than expected by chance (adj.p.val = 0.0000)
+- probe hits are NOT significantly  enriched in S_Shore regions than expected by chance (adj.p.val = 0.1259)
+- probe hits are significantly less enriched in S_Shelf regions than expected by chance (adj.p.val = 0.0000)
+- probe hits are  significantly more enriched in non-CGI-related regions than expected by chance (adj.p.val = 0.0000)
+

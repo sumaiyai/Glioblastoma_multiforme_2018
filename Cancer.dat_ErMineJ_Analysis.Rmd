@@ -1,0 +1,197 @@
+Cancer.dat ErMineJ Analysis
+========================================================
+## By: Sumaiya Islam
+## Date updated: October 11, 2017
+
+### Script contents:
+- Preparation of input files for ErMineJ analysis. Will be generating two specific files:
+1) Background: all UCSC Ref Genes annotated to filtered 450K dataset
+2) Gene Score File: "topTable" of all DMRs with associated UCSC genes, along with adjusted p-value as ranked score
+
+### A. Set up working directory & packages
+
+
+We will initially set our working directory and load our libraries.
+```{r}
+setwd("~/BTIC_GBM") 
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(xtable)
+library(ggplot2)
+library(reshape)
+library(mclust)
+library(limma)
+library(reshape)
+library(ggplot2)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+library(sva)
+library(rama)
+library(data.table)
+library(VennDiagram)
+library("TxDb.Hsapiens.UCSC.hg19.knownGene")
+library("bumphunter")
+library("org.Hs.eg.db")
+```
+
+### B. Generate Background
+
+We will generate a background file representing all UCSC Ref Genes annotated to filtered 450K dataset (Based on code provided by Rachel Edgar, October 2017).
+
+```{r}
+## Load the following annotation files to capture as many gene names matching UCSC gene names as possible:
+# Illumina 450K annotation file from https://support.illumina.com/array/array_kits/infinium_humanmethylation450_beadchip_kit/downloads.html
+annotation<-read.csv("HumanMethylation450_15017482_v1-2.csv", skip=7)
+#From http://www.chibi.ubc.ca/microannots/
+Generic_human<-read.table("Generic_human_noParents.an.txt", sep="\t", header=T)
+# Annotation file built by Elodie (Research Associate in Dr. Paul Pavlidis lab)
+elodie_human<-read.table("404030Probes_Genes_Annotated.txt", sep="\t", header=F)
+colnames(elodie_human)<-colnames(Generic_human)
+elodie_human<-elodie_human[which(!(elodie_human$GeneSymbols%in%Generic_human$GeneSymbols)),] # only extract gene names which are novel and not contained in Generic_human
+# from http://www.chibi.ubc.ca/microannots/
+Ensembl_human<-read.table("Generic_human_ensemblIds.an.txt", sep="\t", header=T)
+Ensembl_human<-Ensembl_human[which(!(Ensembl_human$GeneSymbols%in%Generic_human$GeneSymbols)),] # only extract gene names which are novel and not contained in Generic_human
+
+## Combine 3 additional annotations to generate master human gene background
+Generic_Elodie_Ensembl<-rbind(Generic_human,elodie_human,Ensembl_human)
+
+## Illumina 450K annotation has multiple entries (often repeating) in the UCSC RefGene Name column; will need to split these apart and only extract unique entries
+gene_names_illumina<-sapply(1:nrow(annotation), function(x){ #
+  unique(unlist(strsplit(as.character(annotation$UCSC_RefGene_Name[x]),";")))})
+
+## filter to genes on 450K
+Genes_on450k<-unique(unlist(gene_names_illumina)) #21,231 unique UCSC_RefGene_Name entries in 450K annotation
+Metharray_human<-Generic_Elodie_Ensembl[which(Generic_Elodie_Ensembl$GeneSymbols%in%Genes_on450k),] # filter master human gene background file to just unique UCSC_RefGene_Name entries in 450K annotation; 18,892 rows (this is the master 450K gene background)
+length(which(Genes_on450k%in%Metharray_human$GeneSymbols)) # 16,944
+# Save master 450K gene background
+# write.table(Metharray_human, file="Human_450K_annotation_illumina_UCSCaug2017.an.txt", sep="\t")
+
+
+## make unique 450K annotation file (one gene per line for input into ermineJ)
+annotation_genes<-annotation[,c("IlmnID","UCSC_RefGene_Name")]
+
+annotation_genes_unique<-lapply(1:length(Genes_on450k), function(x){ #1:length(Genes_on450k)
+  CpGs<-as.character(annotation_genes$IlmnID[grep(Genes_on450k[x], annotation_genes$UCSC_RefGene_Name)])
+  data.frame(UCSC_RefGene_Name=Genes_on450k[x], CpG=CpGs)
+})
+
+annotation_genes_unique<-rbindlist(annotation_genes_unique)
+annotation_genes_unique<-as.data.frame(annotation_genes_unique)
+
+# save(annotation_genes_unique,file="Annotation_simplified.Rdata")
+load("Annotation_simplified.Rdata")
+## make background file based on underlying genes of filtered probes in 450K dataset 
+load("Cancer.dat.cor.RData")
+cancer.fDat<-fData(cancer.dat.cor)
+cancer.fDat.ID<-cancer.fDat[,c("ILMNID", "MAPINFO")]
+cancer.fDat.ID$ILMNID<-as.character(cancer.fDat.ID$ILMNID)
+
+## Gene score table for ermineJ
+variable_gene<-merge(cancer.fDat.ID, annotation_genes_unique, by.x="ILMNID", by.y="CpG")
+variable_gene$UCSC_RefGene_Name<-as.character(variable_gene$UCSC_RefGene_Name)
+length(unique(variable_gene$UCSC_RefGene_Name)) # 20,195 genes were represented in filtered cancer.dat 450K data
+
+## filter backgorund to variable put in limma
+Metharray_human_variable<-Metharray_human[which(Metharray_human$GeneSymbols%in%variable_gene$UCSC_RefGene_Name),]
+dim(Metharray_human_variable) # 18,184 genes represented in filtered cancer.dat 450K data
+write.table(Metharray_human_variable, file="Cancer.dat.cor_ErMineJ_Background.txt", sep="\t")
+```
+
+### C. Generate Gene Score File
+
+We will generate a gene Score File which represents "topTable" of all DMRs with associated UCSC genes, along with adjusted p-value as ranked score
+
+```{r}
+load("Bumphunting_output_cancer.dat.RData") # load "topTable" DMRs (output from Bumphunting analysis of cancer.dat 450K data)
+
+# extract all dmrs as a dataframe
+cancer.dat.dmrs<-withq2$q
+dim(cancer.dat.dmrs) # 1086 DMRs
+
+# compute the average beta difference across the DMRs
+cancer.dat.dmrs.db<-cancer.dat.dmrs
+fdat<-fData(cancer.dat.cor) # re-name all 450K probes feature data
+metadat<-pData(cancer.dat.cor) # re-name all meta data
+betas.cancer<-betas(cancer.dat.cor)
+
+# calculate delta betas from two beta matrices of matched samples in the same order
+delta.betas.calc<-function(s1,s2){
+  summation<-unlist(lapply(1:nrow(s1), function(cpg){
+    mean(s1[cpg,]-s2[cpg,])}))
+}
+
+# re-order matched samples in same order in two separate datasets
+samp.matched.dat<-cancer.dat.cor[,order(cancer.dat.cor$Patient_ID)]
+tumour.dat<-samp.matched.dat[,which(samp.matched.dat$Sample_Group=="tumour")]
+cell.dat<-samp.matched.dat[,which(samp.matched.dat$Sample_Group=="cell")]
+identical(tumour.dat$Patient_ID, cell.dat$Patient_ID) # TRUE
+tumour.betas<-betas(tumour.dat)
+cell.betas<-betas(cell.dat)
+identical(rownames(tumour.betas), rownames(cell.betas)) # TRUE
+all.delbetas<-delta.betas.calc(tumour.betas, cell.betas)
+del.betas.df<-data.frame(row.names=rownames(tumour.betas), Delbetas=all.delbetas)
+head(del.betas.df)
+
+dmrX <- list(fdat[1,])
+dmrY<-matrix(NA,1086,3)
+colnames(dmrY)<-c("Name", "Delta.beta","Stdev.Delta.beta")
+# for chromosome number
+for (i in 1:nrow(cancer.dat.dmrs.db)){
+  cancer.dat.dmrs.db$chr.number[i]<-paste(substr(cancer.dat.dmrs.db[i,"chr"], start=4, stop=6))
+}
+
+
+for(i in 1:nrow(cancer.dat.dmrs.db)){
+dat <- cancer.dat.dmrs.db[i,]
+names <- rownames(dat)
+start <- dat$start
+end <- dat$end
+chr <- dat$chr.number
+cpgdat <- subset(fdat, MAPINFO >=start & MAPINFO <=end & CHR == chr)
+delbeta.dmr<-mean(del.betas.df[rownames(cpgdat),"Delbetas"])
+stdev.dmr<-sd(del.betas.df[rownames(cpgdat),"Delbetas"])
+dmrY[i,"Name"] <- names
+dmrY[i,"Delta.beta"] <- round(delbeta.dmr, digits=3)
+dmrY[i,"Stdev.Delta.beta"] <- round(stdev.dmr, digits=3)
+}
+dmr.delbeta.df<-as.data.frame(dmrY)
+str(dmr.delbeta.df)
+dmr.delbeta.df$Name<-as.character(dmr.delbeta.df$Name)
+dmr.delbeta.df$Delta.beta<-as.numeric(dmrY[,2])
+dmr.delbeta.df$Stdev.Delta.beta<-as.numeric(dmrY[,3])
+head(dmr.delbeta.df)
+
+identical(rownames(cancer.dat.dmrs), dmr.delbeta.df$Name) # TRUE
+cancer.dat.dmrs$Delta.beta<-dmr.delbeta.df$Delta.beta
+cancer.dat.dmrs$Stdev.Delta.beta<-dmr.delbeta.df$Stdev.Delta.beta
+
+# map DMRs to genes
+dmrs.to.map<-makeGRangesFromDataFrame(cancer.dat.dmrs)
+genes <- annotateTranscripts(TxDb.Hsapiens.UCSC.hg19.knownGene)
+tab<- matchGenes(dmrs.to.map,genes)
+
+
+dmrs.mapped.output<-cbind(cancer.dat.dmrs$chr, cancer.dat.dmrs$start, cancer.dat.dmrs$end, cancer.dat.dmrs$qvalue, cancer.dat.dmrs$Delta.beta, cancer.dat.dmrs$Stdev.Delta.beta, cancer.dat.dmrs$nprobes, tab)
+colnames(dmrs.mapped.output)<-c("chr", "start", "end", "qvalue", "Avg_delta_beta", "Stdev_delta_beta", "nprobes",   "Gene_name","annotation", "description","region",              "subregion", "insideDistance", "exonnumber", "nexons","UTR","strand",                          "geneL","codingL","Entrez", "subjectHits" )
+
+head(dmrs.mapped.output)
+length(unique(dmrs.mapped.output$Gene_name)) # 892 unique genes represented in 1086 genes from DMRs
+
+## Gene score table for ErmineJ
+
+# take negative log value of qvalue as a score
+dmrs.score.df<-dmrs.mapped.output[c("Gene_name","qvalue", "Avg_delta_beta")]
+dmrs.score.df$neg_log_qvalue<--log10(dmrs.score.df$qvalue)
+dmrs.score.df$neg_log_delta_beta<--log10(abs(dmrs.score.df$Avg_delta_beta))
+dmrs.score.df.ord<-dmrs.score.df[order(dmrs.score.df[,"neg_log_qvalue"], dmrs.score.df[,"neg_log_delta_beta"]), ]
+dmrs.score.df.ord2<-dmrs.score.df.ord[seq(dim(dmrs.score.df.ord)[1],1),]
+cancer.dmr.gene.score.file<-data.frame(Gene = dmrs.score.df.ord2$Gene_name, Score=1:1086)
+# write.table(cancer.dmr.gene.score.file, file="Cancer.dat.DMR.ErMineJ.gene.score.file.txt", sep="\t", quote=F, row.names=F)
+```
+

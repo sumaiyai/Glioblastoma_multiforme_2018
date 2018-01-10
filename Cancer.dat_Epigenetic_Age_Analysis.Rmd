@@ -1,0 +1,249 @@
+Cancer.Dat Epigenetic Age Analysis
+================================================================
+## By: Sumaiya Islam
+## Date: Oct 1, 2017
+
+### Script contents:
+- Assessment of 'epigenetic age' (Horvath et al. 2013, Genome Biol) to see if DNA methylation age differs between matched BTICs vs GBM tumours
+
+### A. Set up wd & packages
+
+We will initially set up our working directory and load our libraries.
+```{r include=FALSE}
+setwd("/home/sislam/BTIC_GBM")
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(xtable)
+library(limma)
+library(ggplot2)
+library(reshape)
+```
+
+### B. Load data
+
+We will load the raw 450K data (un-normalized) for the Cancer.dat dataset as well as the clean, filtered, finalized 450K Cancer.dat dataset. Will subset raw 450K data to samples contained in final 450K data and use updated meta data from the final 450K dataset. 
+
+```{r load_data}
+load("BTIC_GBM.RData") # load raw 450K methylumi data object for Cancer.dat
+dim(betas(BTIC_GBM)) # 485,577 probes, n = 128
+
+load("Cancer.dat.cor.RData") # load final 450K methylumi data object for Cancer.dat
+dim(betas(cancer.dat.cor)) # 420,195 probes, n = 70
+
+# subset raw data to just samples contained in the final Cancer.dat object
+final.samples<-sampleNames(cancer.dat.cor)
+Raw.cancer.dat.sub<-BTIC_GBM[,final.samples]
+dim(Raw.cancer.dat.sub) # 485,577 probes, n = 70
+# check that sample order for both objects match
+identical(sampleNames(Raw.cancer.dat.sub), sampleNames(cancer.dat.cor)) # TRUE
+identical(rownames(pData(cancer.dat.cor)), colnames(betas(Raw.cancer.dat.sub))) # TRUE
+
+# pull raw beta matrix
+raw.betas.cancer.dat<-betas(Raw.cancer.dat.sub)
+identical(colnames(raw.betas.cancer.dat), rownames(pData(cancer.dat.cor))) # TRUE
+```
+
+### C. Re-shape beta data put input into epigenetic age calculator
+
+```{r}
+# re-format cortex-only dataset
+library(sqldf)
+#change the setwd filepath to that of the folder with your data. Note the forward slash
+setwd("/home/sislam/BTIC_GBM")
+betas.cancer.df<-as.data.frame(raw.betas.cancer.dat)
+Probe_ID<-rownames(betas.cancer.df) # character vector of length 485,577
+dat0<-cbind(Probe_ID,betas.cancer.df)
+str(dat0)
+datMiniAnnotation=read.csv("datMiniAnnotation.csv")
+match1=match(datMiniAnnotation[,1], dat0[,1])
+dat0Reduced=dat0[match1,]
+head(dat0Reduced)
+dat0Reduced[,1]=as.character(dat0Reduced[,1])
+dat0Reduced[is.na(match1),1]=as.character(datMiniAnnotation[is.na(match1),1])
+datout=data.frame(dat0Reduced)
+# make sure you output numeric variables...
+for (i in 2:dim(datout)[[2]]  ){datout[,i]= 
+as.numeric(as.character(gsub(x=datout[,i],pattern="\"",replacement=""))) }
+head(datout)
+corrected.datout.colnames<-c("Probe_ID", colnames(betas.cancer.df))
+colnames(datout)<-corrected.datout.colnames
+str(datout)
+# write.table(datout,"Betas.cancer.Horvath.csv", row.names=F, sep="," )
+```
+
+### D. Select needed variables for meta data to input into epigenetic age calculator
+
+Use meta data from final 450K Cancer.dat object
+```{r}
+## for cancer.dat dataset meta data
+meta.cancer<-pData(cancer.dat.cor)
+colnames(meta.cancer)
+head(meta.cancer)
+meta.cancer$Sample_Name<-rownames(meta.cancer)
+meta.cancer.Horvath<-subset(meta.cancer, select=c("Sample_Name","Age", "Sex"))
+# re-format data according to Horvath's specifications in http://labs.genetics.ucla.edu/horvath/dnamage/TUTORIALonlineCalculator.pdf
+colnames(meta.cancer.Horvath)<-c("Sample_ID","Age", "Female")
+meta.cancer.Horvath$Female<-gsub("f", "1", gsub("m", "0", meta.cancer.Horvath$Female))
+meta.cancer.Horvath$Female<-as.numeric(meta.cancer.Horvath$Female)
+meta.cancer.Horvath$Tissue<-"Brain FCTX" 
+identical(colnames(betas.cancer.df), meta.cancer.Horvath$Sample_ID) #TRUE
+meta.cancer.Horvath
+# write.table(meta.cancer.Horvath,"Meta.cancer.Horvath.csv", row.names=F, sep=",")
+```
+
+## E. Analysis of output from online epigenetic age calculator
+
+```{r}
+
+## load outputs (as csv files)
+cancer.output<-read.csv("Cancer.dat.Horvath.Clock.output.csv", header=T) # cancer dataset analysis
+
+cancer.output$SampleID<-meta.cancer.Horvath$Sample_ID # put in corrected sample labels
+cancer.output.rev<-cbind(cancer.output, meta.cancer) # append all meta data
+colnames(cancer.output.rev)
+
+### analyze cancer-only dataset output
+
+## scatterplot of DNAmAge and Chronological Age (Reported)
+ggplot(cancer.output.rev, aes(Age, DNAmAge)) + geom_point(aes(color = AgeAccelerationResidual)) + geom_smooth(method="lm") +
+  theme_bw()+xlab("Chronological Age")+ylab("DNA Methylation Age") 
+
+## test for correlation btw DNAm Age and Chronological Age
+cor.test(cancer.output.rev$Age, cancer.output.rev$DNAmAge, method= "spearman") # DNAm Age and Age not significantly correlated (Spearman's rho = 0.17, p-value = 0.141)
+```
+
+We observe very poor correlation between DNAm age and chronological age with very high DNAm age measures overall. We also see that there appears to be one sample (53_cell) with an abnormally high DNAm age measure of 226. This sample had major warnings from the epigenetic clock output ("Old DNAm age. MAJOR Warning: The methylation levels of this sample have a very low correlation with the expected values: corSampleVSgoldstandard<0.75. Warning: Poorly calibrated methylation levels: meanAbsDifferenceSampleVSgoldstandard >0.15. "). Will remove this outlier BTIC sample and its corresponding tumour sample (53_cell and 53_tumour to be removed). 
+
+```{r}
+
+## remove 53_cell (outlier) and corresponding 53_tumour sample
+outlier.samples<-c("53_cell", "53_tumour")
+dim(cancer.output.rev.cor<-cancer.output.rev[!(cancer.output.rev$SampleID%in%outlier.samples),])
+  
+## re-analyze scatterplot of DNAmAge and Chronological Age (Reported)
+ggplot(cancer.output.rev.cor, aes(Age, DNAmAge)) + geom_point(aes(color = Sample_Group)) + geom_smooth(method="lm", colour = "gray14") +  scale_color_manual(values=c("#fc8d59","#99d594")) + 
+  theme_bw() + xlab("Chronological Age")+ ylab("DNA Methylation Age") 
+
+## test for correlation btw DNAm Age and Chronological Age
+cor.test(cancer.output.rev.cor$Age, cancer.output.rev.cor$DNAmAge, method= "spearman") # DNAm Age and Age not significantly correlated (Spearman's rho = 0.19, p-value = 0.1177)
+
+## subset down to cell and tumour subsets to assess DNAm age correlation to chronological age
+
+dim(BTIC.output.cor<-cancer.output.rev.cor[which(cancer.output.rev.cor$Sample_Group=="cell"),])
+BTIC.output.cor<-BTIC.output.cor[order(BTIC.output.cor$Patient_ID),] # order by patient ID
+dim(Tumour.output.cor<-cancer.output.rev.cor[which(cancer.output.rev.cor$Sample_Group=="tumour"),]) # order by patient ID
+Tumour.output.cor<-Tumour.output.cor[order(Tumour.output.cor$Patient_ID),]
+identical(BTIC.output.cor$Patient_ID, Tumour.output.cor$Patient_ID) # TRUE
+
+## re-analyze scatterplot of DNAmAge and Chronological Age (Reported) for BTICs
+ggplot(BTIC.output.cor, aes(Age, DNAmAge)) + geom_point(aes(color = AgeAccelerationResidual)) + geom_smooth(method="lm") +
+  theme_bw()+xlab("Chronological Age")+ylab("DNA Methylation Age")+ ggtitle("Correlation of DNA methylation age and chronological age in BTICs")
+
+## test for correlation btw DNAm Age and Chronological Age for BTICs
+cor.test(BTIC.output.cor$Age, BTIC.output.cor$DNAmAge, method= "spearman") # DNAm Age and Age not significantly correlated (Spearman's rho = 0.13, p-value = 0.4514)
+
+## re-analyze scatterplot of DNAmAge and Chronological Age (Reported) for Tumours
+ggplot(Tumour.output.cor, aes(Age, DNAmAge)) + geom_point(aes(color = AgeAccelerationResidual)) + geom_smooth(method="lm") +
+  theme_bw()+xlab("Chronological Age")+ylab("DNA Methylation Age") + ggtitle("Correlation of DNA methylation age and chronological age in Tumours")
+
+## test for correlation btw DNAm Age and Chronological Age for Tumours
+cor.test(Tumour.output.cor$Age, Tumour.output.cor$DNAmAge, method= "spearman") # DNAm Age and Age not significantly correlated (Spearman's rho = 0.22, p-value = 0.2106)
+```
+
+After removal of outlier sample (53_cell and her corresponding 53_tumour), we can see that there is poor correlation (Spearman's rho = 0.19, p-value = 0.1177) between DNA methylation age and chronological age. This is consistent with previous work which states " the correlation between DNAm age and chronological age tends to be weak (cor = 0.15, P = 1.9E-29; Additional file 13A)." (Horvath 2013 Genome Biology). The fact that our correlation is not significant is likely to due with the low sample size of our cohort. Below, we will further investigate parameters related to DNA methylation age (ie age acceleration) in these samples.
+
+```{r}
+## look at DNAm Age across all matched samples
+ggplot(cancer.output.rev.cor, aes(Sample_Group, DNAmAge))+
+  geom_boxplot(aes(fill=Sample_Group),color="black", outlier.shape=NA)+  scale_fill_manual(values=c("#fc8d59","#99d594")) +
+  geom_point(shape=21, fill="grey",colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Origin")+ylab("Predicted DNA Methylation Age")  
+
+
+wilcox.test(BTIC.output.cor$DNAmAge, Tumour.output.cor$DNAmAge, paired=TRUE) # p-value = 8.127e-05 (Wilcox signed rank test)
+
+
+## DNAm Age by subtype in BTICs
+ggplot(BTIC.output.cor, aes(Parental_Tumour_Subtype, DNAmAge))+
+  geom_point(aes(fill = Parental_Tumour_Subtype), shape=21,colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Subtype")+ylab("Predicted DNA Methylation Age") 
+
+kruskal.test(DNAmAge ~ Parental_Tumour_Subtype, data = BTIC.output.cor) # p = 0.5848
+
+
+## DNAm Age by subtype in Tumours
+ggplot(Tumour.output.cor, aes(Parental_Tumour_Subtype, DNAmAge))+
+  geom_point(aes(fill = Parental_Tumour_Subtype), shape=21,colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Subtype")+ylab("Predicted DNA Methylation Age") 
+
+kruskal.test(DNAmAge ~ Parental_Tumour_Subtype, data = Tumour.output.cor) # p = 0.4161
+ 
+```
+
+We can see that BTICs exhibit significantly higher DNA methylation age over matched GBM tumours (p-value = 8.127e-05 (Wilcox signed rank test)). There does not appear to be any association between DNA methylation age and parental tumour subtype. 
+
+```{r}
+
+## look at DNAm Age across all matched samples
+ggplot(cancer.output.rev.cor, aes(Sample_Group, AgeAccelerationResidual))+
+  geom_boxplot(aes(fill=Sample_Group),color="black", outlier.shape=NA)+  scale_fill_manual(values=c("#fc8d59","#99d594")) +
+  geom_point(shape=21, fill="grey",colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Origin")+ylab("Age Acceleration Residual")  
+
+
+wilcox.test(BTIC.output.cor$AgeAccelerationResidual, Tumour.output.cor$AgeAccelerationResidual, paired=TRUE) # p-value = 8.127e-05 (Wilcox signed rank test)
+
+
+## DNAm Age by subtype in BTICs
+ggplot(BTIC.output.cor, aes(Parental_Tumour_Subtype, AgeAccelerationResidual))+
+  geom_point(aes(fill = Parental_Tumour_Subtype), shape=21,colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Subtype")+ylab("Age Acceleration Residual") 
+
+kruskal.test(AgeAccelerationResidual ~ Parental_Tumour_Subtype, data = BTIC.output.cor) # p = 0.5834
+
+
+## DNAm Age by subtype in Tumours
+ggplot(Tumour.output.cor, aes(Parental_Tumour_Subtype, AgeAccelerationResidual))+
+  geom_point(aes(fill = Parental_Tumour_Subtype), shape=21,colour="black", size=4, position=position_jitter(w=0.2))+
+  theme_bw()+xlab("Subtype")+ylab("Age Acceleration Residual") 
+
+kruskal.test(AgeAccelerationResidual ~ Parental_Tumour_Subtype, data = Tumour.output.cor) # p = 0.316
+```
+
+We can see that BTICs exhibit significantly higher age acceleration over matched GBM tumours (p-value = 8.127e-05 (Wilcox signed rank test)). There does not appear to be any association between age acceleration and parental tumour subtype. 
+
+```{r}
+Horvath.sites.df<-read.csv("Horvath_Clock_353_Sites.csv")
+Horvath.sites<-as.character(Horvath.sites.df$CpG)
+
+# Subset final cancer.dat 450K data to 353 clock sites in Horvath's epigenetic clock
+
+dim(cancer.clock.dat<-cancer.dat.cor[which(featureNames(cancer.dat.cor)%in%Horvath.sites),]) # 333 probes, n = 70
+
+## Heatmap
+
+cdat <- scale(t(exprs(cancer.clock.dat)))
+# define colour palette
+BuPu <- colorRampPalette(brewer.pal(10,"RdYlBu")[1:10])(30)
+# define coloured variables
+
+tissueCol <- as.numeric(factor(cancer.clock.dat$Tissue))
+tissueCol <- gsub("1", "#fc8d59",  gsub("2", "#99d594", tissueCol))
+heatmap.2(cdat,
+          trace = "none", col = BuPu, dendrogram = "both",
+           cexRow = 0.5,
+          RowSideColors = tissueCol,
+          cexCol = 0.5,
+          keysize = 1)
+legend("topright",legend = c("cell", "tumour"), 
+    col = c("#99d594", "#fc8d59")
+)
+
+```
+
+Heatmap of Hovarth clock 333 CpGs (out of 353 CpGs) in the finalized cancer.dat 450K data shows that these CpGs cluster by tissue type. 

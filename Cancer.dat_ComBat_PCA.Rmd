@@ -1,0 +1,265 @@
+Cancer.dat PCA & ComBat
+========================================================
+## By: Sumaiya Islam
+## Date: January 3, 2016
+
+### Script contents:
+- PCA comparing the raw and normalized datasets for cancer.dat  
+- ComBat to correct technical batch effects
+
+### A. Set up working directory & packages
+
+
+We will initially set our working directory and load our libraries.
+```{r}
+library(methylumi)
+library(reshape)
+library(ggplot2)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+library(sva)
+library(rama)
+```
+
+## Heat scree plot Function
+```{r}
+### Function of association meta variable with PC (ANOVA)
+heat_scree_plot<-function(Loadings, Importance, Num, Order){
+  adjust<-1-Importance[1]
+  pca_adjusted<-Importance[2:length(Importance)]/adjust
+  pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted)))
+  
+  scree<-ggplot(pca_df[which(pca_df$PC<Num),],aes(PC,adjusted_variance))+geom_bar(stat = "identity",color="black",fill="grey")+theme_bw()+
+        theme(axis.text = element_text(size =12),
+              axis.title = element_text(size =15),
+              plot.margin=unit(c(1,1.5,0.2,2.25),"cm"))+ylab("Variance")+
+    scale_x_continuous(breaks = seq(1,Num,1))
+  
+  #### Heat
+  ## correlate meta with PCS
+  ## Run anova of each PC on each meta data variable
+
+  aov_PC_meta<-lapply(1:ncol(meta_categorical), function(covar) sapply(1:ncol(Loadings), function(PC) summary(aov(Loadings[,PC]~meta_categorical[,covar]))[[1]]$"Pr(>F)"[1]))
+  # cor_PC_meta<-lapply(1:ncol(meta_continuous), function(covar) sapply(1:ncol(Loadings), function(PC) (cor.test(Loadings[,PC],as.numeric(meta_continuous[,covar]),alternative = "two.sided", method="spearman", na.action=na.omit)$p.value)))
+  names(aov_PC_meta)<-colnames(meta_categorical)
+ # names(cor_PC_meta)<-colnames(meta_continuous)
+  aov_PC_meta<-do.call(rbind, aov_PC_meta)
+ # cor_PC_meta<-do.call(rbind, cor_PC_meta)
+ # aov_PC_meta<-rbind(aov_PC_meta, cor_PC_meta)
+  aov_PC_meta<-as.data.frame(aov_PC_meta)
+  #adjust
+  aov_PC_meta_adjust<-aov_PC_meta[,2:ncol(aov_PC_meta)]
+  
+    
+  #reshape
+  avo<-aov_PC_meta_adjust[,1:(Num-1)]
+  avo_heat_num<-apply(avo,2, as.numeric)
+  avo_heat<-as.data.frame(avo_heat_num)
+  colnames(avo_heat)<-sapply(1:(Num-1), function(x) paste("PC",x, sep=""))
+  avo_heat$meta<-rownames(avo)
+  avo_heat_melt<-melt(avo_heat, id=c("meta"))
+  
+  # cluster meta data
+  ord <- Order
+  meta_var_order<-unique(avo_heat_melt$meta)[rev(ord)]
+  avo_heat_melt$meta <- factor(avo_heat_melt$meta, levels = meta_var_order)
+  
+  # color if sig
+  # avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]>=0.9){">=0.9"}else{
+   # if(avo_heat_melt$value[x]>=0.5){">=0.5"}else{
+     # if(avo_heat_melt$value[x]>=0.1){">=0.1"}else{"<0.1"}}})
+  avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]<=0.001){"<=0.001"}else{
+     if(avo_heat_melt$value[x]<=0.01){"<=0.01"}else{
+       if(avo_heat_melt$value[x]<=0.05){"<=0.05"}else{">0.05"}}})
+  
+  heat<-ggplot(avo_heat_melt, aes(variable,meta, fill = Pvalue)) +
+  geom_tile(color = "black",size=0.5) +
+  theme_gray(8)+scale_fill_manual(values=c("#084594","#4292c6","#9ecae1","#deebf7"))+
+      theme(axis.text = element_text(size =10, color="black"),
+            axis.text.x = element_text(),
+          axis.title = element_text(size =15),
+          legend.text = element_text(size =14),
+          legend.title = element_text(size =12),
+          legend.position = c(1, 0), legend.justification = c(1,0),
+          plot.margin=unit(c(0,2.25,1,1),"cm"))+
+    xlab("Principal Component")+ylab(NULL)
+  
+  grid.arrange(scree, heat, ncol=1)
+}
+```
+
+
+### B. Load files
+
+#### We will be analyzing the raw and normalized datasets for cancer.dat and BTIC.dat
+
+```{r}
+load("Cancer.dat.raw.RData")  # raw, filtered data for cancer.dat
+load("Cancer.Dat.BMIQ.RData") # normalized data for cancer.dat
+# check for NAs in data
+ind<-is.row.na(betas(cancer.dat)) # The function returns a vector of logical variables, one for each row of the matrix. The variable is TRUE if the row does not contain any missing values and FAlSE otherwise.
+length(na.count<-which(ind=="FALSE")) # 0 (there are no rows that contain a NA in the raw data)
+ind<-is.row.na(betas(cancer.dat.BMIQ)) # The function returns a vector of logical variables, one for each row of the matrix. The variable is TRUE if the row does not contain any missing values and FAlSE otherwise.
+length(na.count<-which(ind=="FALSE")) # 0 (there are no rows that contain a NA in the normalized data)
+```
+
+
+## PCA Scree Heatmap for raw data for cancer.dat
+
+```{r warning=FALSE, fig.height=9, fig.width=11}
+
+## re-structure meta data: change categorical variables to factors for ANOVA and continuous variables to numeric for Spearman's correlation
+meta.cancer<-pData(cancer.dat)
+str(meta.cancer)
+
+## PCA 
+betas.cancer<-betas(cancer.dat.BMIQ)
+PCA_full<-princomp(betas.cancer[complete.cases(betas.cancer),]) # scaling is not necessary for normalized dataset
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+                                                                                                                                                                                                                     vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+sum(pca_df$adjusted_variance[1:41]) # top 41 PCs account for ~90% of the DNA methylation variance
+
+#Specify which covariates are categorical and/or categorical
+colnames(meta.cancer)
+meta_categorical<-meta.cancer[,c("Sample_Group", "Batch", "Sentrix_ID", "Row", "Diagnosis")]  # input column numbers in meta that contain categorical variables
+# meta_continuous<-data.frame(meta_continuous)
+colnames(meta_categorical)<-c("Tissue Type","Batch", "Chip", "Row", "Diagnosis")
+
+# Specify the number of PCs you want shown (usually # of samples in the dataset)
+Num<-41
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-1:5
+
+#Apply function on PCA results, pulls in the meta data and beta values from above
+heat_scree_plot(Loadings, Importance, Num, Order)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+```
+
+
+We can observe that there are some significant Batch, Chip and Row effects that I will need to correct using ComBat. 
+
+
+### B. ComBat 
+
+We will apply ComBat to the normalized dataset containing the cancer (tumour + BTIC) samples only (which were run across the two batches). ComBat uses an empirical Bayesian (EB) estimates the Location(mean)/Scale(variance) model parameters that represent the batch effects by “pooling information” across genes in each batch to “shrink” the batch effect parameter estimates toward the overall mean of the batch effect estimates (across genes). These EB estimates are then used to adjust the data for batch effects, providing more robust adjustments for the batch effect on each gene.
+
+According to the creators of the SVA package, we can pre-set which variable(s) of interest to protect from ComBat correction. We will only protect tissue type (tumour vs BTIC) as that is our main variable of interest. We will see how tissue samples are distributed across batches, chips and rows.
+
+```{r echo=FALSE}
+tissue<-as.character(cancer.dat.BMIQ$Sample_Group)
+levels(tissue)<-c("cell", "tumour")
+meta.cancer$Tissue<-as.factor(tissue)
+table(meta.cancer$Batch, meta.cancer$Tissue)
+table(meta.cancer$Sentrix_ID, meta.cancer$Tissue)
+table(meta.cancer$Row, meta.cancer$Tissue)
+```
+
+We can see that the samples are distributed similarly across batches. However, there are some chips that only contain 1 sample of a tissue type. Similarly, there are some rows that only contain 1 sample of a tissue type. This is problematic because ComBat cannot use Bayesian estimation to estimate priors if there is only 1 sample in each batch/varible combination. That means that we can only correct for batch effects using ComBat but not for chip and row effects. 
+
+```{r echo=FALSE}
+
+preComBat_Batch.datM <- exprs(cancer.dat.BMIQ) # ComBat must be applied to M-values from normalized dataset
+mod <- model.matrix(~ Tissue, data=meta.cancer)
+Combat_Batch.dat <- ComBat(dat=preComBat_Batch.datM, batch=meta.cancer$Batch, mod=mod)
+
+
+### fill in the slot of the methylumi object with ComBat file
+Combat_1<-cancer.dat.BMIQ
+identical(rownames(exprs(Combat_1)), rownames(Combat_Batch.dat))
+exprs(Combat_1) <- Combat_Batch.dat
+
+# pull needed data for PCA from ComBat 1 methylumi object
+Beta_Data<-betas(Combat_1)
+```
+
+### C. PCA for Combat (Batch effect corrected) Data
+
+## Run PCA and apply the heat_scree plot function
+```{r warning=FALSE, fig.height=9, fig.width=11}
+## PCA
+PCA_full<-princomp(Beta_Data[complete.cases(Beta_Data),]) # scaling is not necessary for normalized dataset
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+
+#Specify which covariates are categorical and/or categorical
+colnames(meta.cancer)
+meta_categorical<-meta.cancer[,c("Sample_Group", "Batch", "Sentrix_ID", "Row", "Diagnosis")]  # input column numbers in meta that contain categorical variables
+# meta_continuous<-data.frame(meta_continuous)
+colnames(meta_categorical)<-c("Tissue Type","Batch", "Chip", "Row", "Diagnosis")
+
+
+# Specify the number of PCs you want shown (usually # of samples in the dataset)
+Num<-41
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-1:5
+
+#Apply function on PCA results, pulls in the meta data and beta values from above
+heat_scree_plot(Loadings, Importance, Num, Order)
+```
+
+We can see that Batch effects have been removed from the methylation data. Favourably, chip and row effects have decreased as well. They are now only seen co-associated in PC16 which comprises only 1.4% of DNA methylation variance (note that diagnosis is also associated with this PC). Row effects are also correlated with PC25, comprising 1.07% of the DNA methylation variance (as is diagnosis variable). However, the major effects of tissue type and diagnosis remain unchanged (in PC1 and PC4, respectively). 
+
+
+### D. Save Combat corrected data
+```{r}
+cancer.dat_Combat<-Combat_1
+dim(cancer.dat_Combat) # probes = 420,195 n = 73
+# save(cancer.dat_Combat, file="Cancer.dat_Combat.RData")
+```
+
+### I. Check technical replicate correlation before and after ComBat
+
+```{r}
+
+RepCor  <- function(x,y) {
+  sRep <- x[, sampleNames(x)%in%y]
+  cor.dat<- cor(betas(sRep), use = "pairwise.complete.obs")
+  return(result = cor.dat[1, 2])
+}
+
+##  define within batch technical replicates
+Rep067<-c("67_cell", "67_cell_rep")
+Rep147<-c("147_cell", "147_cell_rep")
+
+##  define across batch technical replicates
+Rep073<-c("73_cell", "73_cell_rep")
+Rep012<-c("12_cell", "12_cell_rep") # only present in BTIC.dat
+
+# for cancer.dat, need to omit all lines pertaining to Rep012 (this set, 12_cell and 12_cell_rep does not exist in the cancer.dat dataset
+tech.rep.comparisons<-function(raw.dat, norm.dat){
+  ## compute correlations for raw cancer.dat
+  # Within Batch 1  technical replicates
+  cor067.raw<-RepCor(raw.dat, Rep067) 
+  cor147.raw<-RepCor(raw.dat, Rep147) 
+  # avg.batch1.raw<-mean(c(cor067.raw, cor147.raw))
+  # across batch technical replicates
+  cor073.raw<-RepCor(raw.dat, Rep073)
+  # cor012.raw<-RepCor(raw.dat, Rep012) 
+  # avg.cross.batch.raw<-mean(c(cor073.raw, cor012.raw))
+  ## compute correlations for raw cancer.dat
+  # Within Batch 1  technical replicates
+  cor067.norm<-RepCor(norm.dat, Rep067) 
+  cor147.norm<-RepCor(norm.dat, Rep147) 
+  # avg.batch1.norm<-mean(c(cor067.norm, cor147.norm))
+  # across batch technical replicates
+  cor073.norm<-RepCor(norm.dat, Rep073)
+  # cor012.norm<-RepCor(norm.dat, Rep012) 
+  # avg.cross.batch.norm<-mean(c(cor073.norm, cor012.norm))
+  ## generate output table
+  Tech.Rep.Correlations<-data.frame(Before_ComBat=c(cor067.raw, cor147.raw, cor073.raw), After_ComBat=c(cor067.norm, cor147.norm, cor073.norm))
+  rownames(Tech.Rep.Correlations)<-c("67 Rep", "147 Rep", "73 Rep")
+  return(Tech.Rep.Correlations)
+}
+
+(cancer.dat.tech.rep.cor<-tech.rep.comparisons(cancer.dat.BMIQ, cancer.dat_Combat))
+```
+
+We can see that there is a (slight) improvement in technical replicate correlation after ComBat as desired. 

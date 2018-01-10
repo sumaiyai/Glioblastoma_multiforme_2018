@@ -1,0 +1,1758 @@
+Cancer.dat Differential Methylation Analysis
+========================================================
+## By: Sumaiya Islam
+## Date updated: March 6, 2017
+
+### Script contents:
+- Differential methylation analysis of cancer.dat_Combat (35 matched tumour/BTIC pairs)
+
+### A. Set up working directory & packages
+
+
+We will initially set our working directory and load our libraries.
+```{r}
+setwd("~/BTIC_GBM") 
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(xtable)
+library(ggplot2)
+library(reshape)
+library(mclust)
+library(limma)
+library(reshape)
+library(ggplot2)
+library(RColorBrewer)
+library(grid)
+library(gridExtra)
+library(sva)
+library(rama)
+# devtools::install_github("thomased/natpalette")
+library(natpalette)
+library(VennDiagram)
+library(mixtools)
+library(ggsignif)
+library(gtools)
+```
+
+### B. Load filtered dataset. 
+
+We will load the ComBat-corrected cancer.dat dataset and then filter out the technical replicates to yield a final dataset comprised of 35 pairs of matched BTIC and tumour methylation profiles. 
+
+```{r}
+# load ComBat-corrected data
+# load(file="Cancer.dat_Combat.RData") # Combat corrected data
+# dim(cancer.dat_Combat) # probes = 420,195, samples = 73
+# 
+# # filter out all technical replicates
+# reps<-c("67_cell_rep", "147_cell_rep", "73_cell_rep")
+# cancer.dat.cor<- cancer.dat_Combat[,!(sampleNames(cancer.dat_Combat)) %in% reps]
+# dim(cancer.dat.cor) # probes = 420,195, samples = 70
+# sampleNames(cancer.dat.cor)
+# # check meta data
+# tissue<-as.character(cancer.dat.cor$Sample_Group)
+# tissue<-as.factor(tissue)
+# levels(tissue)<-c("cell", "tumour")
+# pData(cancer.dat.cor)$Tissue<-as.factor(tissue)
+# str(pData(cancer.dat.cor))
+# # save(cancer.dat.cor, file = "Cancer.dat.cor.RData")
+
+
+
+# append updated meta data from January 2017
+# updated_cancer_metadata<-read.csv("Meta_Data_Cancer.dat_Jan_2017.csv", row.names = 1)
+# identical(rownames(updated_cancer_metadata), sampleNames(cancer.dat.cor)) # TRUE
+# str(updated_cancer_metadata)
+# pData(cancer.dat.cor)<-updated_cancer_metadata
+# str(pData(cancer.dat.cor))
+# save(cancer.dat.cor, file = "Cancer.dat.cor.RData")
+
+load("Cancer.dat.cor.RData")
+```
+
+### C. Differential Methylation Analysis
+
+#### PCA: Heat scree plot function
+```{r}
+### Function of association meta variable with PC (ANOVA)
+heat_scree_plot<-function(Loadings, Importance, Num, Order){
+  adjust<-1-Importance[1]
+  pca_adjusted<-Importance[2:length(Importance)]/adjust
+  pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted)))
+  
+  scree<-ggplot(pca_df[which(pca_df$PC<Num),],aes(PC,adjusted_variance))+geom_bar(stat = "identity",color="black",fill="grey")+theme_bw()+
+        theme(axis.text = element_text(size =12),
+              axis.title = element_text(size =15),
+              plot.margin=unit(c(1,1.5,0.2,2.25),"cm"))+ylab("Variance")+
+    scale_x_continuous(breaks = seq(1,Num,1))
+  
+  #### Heat
+  ## correlate meta with PCS
+  ## Run anova of each PC on each meta data variable
+
+  aov_PC_meta<-lapply(1:ncol(meta_categorical), function(covar) sapply(1:ncol(Loadings), function(PC) summary(aov(Loadings[,PC]~meta_categorical[,covar]))[[1]]$"Pr(>F)"[1]))
+  cor_PC_meta<-lapply(1:ncol(meta_continuous), function(covar) sapply(1:ncol(Loadings), function(PC) (cor.test(Loadings[,PC],as.numeric(meta_continuous[,covar]),alternative = "two.sided", method="spearman", na.action=na.omit)$p.value)))
+  names(aov_PC_meta)<-colnames(meta_categorical)
+ names(cor_PC_meta)<-colnames(meta_continuous)
+  aov_PC_meta<-do.call(rbind, aov_PC_meta)
+ cor_PC_meta<-do.call(rbind, cor_PC_meta)
+ aov_PC_meta<-rbind(aov_PC_meta, cor_PC_meta)
+  aov_PC_meta<-as.data.frame(aov_PC_meta)
+  #adjust
+  aov_PC_meta_adjust<-aov_PC_meta[,2:ncol(aov_PC_meta)]
+  
+    
+  #reshape
+  avo<-aov_PC_meta_adjust[,1:(Num-1)]
+  avo_heat_num<-apply(avo,2, as.numeric)
+  avo_heat<-as.data.frame(avo_heat_num)
+  colnames(avo_heat)<-sapply(1:(Num-1), function(x) paste(x, sep=""))
+  avo_heat$meta<-rownames(avo)
+  avo_heat_melt<-melt(avo_heat, id=c("meta"))
+  
+  # cluster meta data
+  ord <- Order
+  meta_var_order<-unique(avo_heat_melt$meta)[rev(ord)]
+  avo_heat_melt$meta <- factor(avo_heat_melt$meta, levels = meta_var_order)
+  
+  # color if sig
+  avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]>=0.9){">=0.9"}else{
+  if(avo_heat_melt$value[x]>=0.5){">=0.5"}else{
+  if(avo_heat_melt$value[x]>=0.1){">=0.1"}else{"<0.1"}}})
+  avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]<=0.001){"<=0.001"}else{
+     if(avo_heat_melt$value[x]<=0.01){"<=0.01"}else{
+       if(avo_heat_melt$value[x]<=0.05){"<=0.05"}else{">0.05"}}})
+  
+  heat<-ggplot(avo_heat_melt, aes(variable,meta, fill = Pvalue)) +
+  geom_tile(color = "black",size=0.5) +
+  theme_gray(8)+scale_fill_manual(values=c("#084594","#4292c6","#9ecae1","#deebf7"))+
+      theme(axis.text = element_text(size =10, color="black"),
+            axis.text.x = element_text(),
+          axis.title = element_text(size =15),
+          legend.text = element_text(size =14),
+          legend.title = element_text(size =12),
+          legend.position = c(1, 0), legend.justification = c(1,0),
+          plot.margin=unit(c(0,2.25,1,1),"cm"))+
+    xlab("Principal Component")+ylab(NULL)
+  
+  grid.arrange(scree, heat, ncol=1)
+}
+
+# run PCA
+betas.cancer<-betas(cancer.dat.cor)
+PCA_full<-princomp(betas.cancer[complete.cases(betas.cancer),]) # scaling is not necessary for normalized dataset
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+
+
+
+#Specify which covariates are categorical and/or continuous
+meta.cancer<-pData(cancer.dat.cor)
+colnames(meta.cancer)
+meta_categorical<-meta.cancer[,c("Tissue", "Diagnosis","Parental_Tumour_Subtype", "Subtype", "Sex", "Batch", "Sentrix_ID", "Row")]  # input column numbers in meta that contain categorical variables
+meta_continuous<-meta.cancer[,"Age"]
+meta_continuous<-data.frame(meta_continuous)
+colnames(meta_categorical)<-c("Tissue Type","Diagnosis", "Parental Tumour Subtype", "Subtype", "Sex","Batch", "Chip", "Row")
+colnames(meta_continuous)<-c("Age")
+
+
+# Specify the number of PCs you want shown (usually # of samples in the dataset)--represents 90% of variance
+Num<-20
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-1:9
+
+#Apply function on PCA results, pulls in the meta data and beta values from above and represent as heat scree plot
+heat_scree_plot(Loadings, Importance, Num, Order)
+```
+We can see that in the corrected cancer.dat.cor dataset, some technical variation remains---specifically, chip and row effects. However, we can see that these do not correlate to the same PCs as tissue type and diagnosis (biological variables of interest), meaning there is likely minimal confounding. 
+
+```{r}
+# ggplot of PC1 vs PC2 for tissue type differences
+### in ggplot need to adjust for probe offset PC so plot Comp.2 vs Comp.3 to represent PC1 vs PC2
+
+Group <- factor(cancer.dat.cor$Tissue) 
+ggplot(Loadings,aes(Comp.2,Comp.3))+
+  geom_point(aes(fill=Group),shape = 21, size=5)+
+  scale_fill_manual(values=c("#fc8d59","#99d594")) +
+  theme_bw() +
+  xlab("PC1 (23.7% variance)") + 
+  ylab("PC2 (7.8% variance)")
+
+Loadings.ordered<-Loadings[order(rownames(Loadings)),]
+tumour.samples.pc<-grep("tumour", rownames(Loadings.ordered), value = TRUE)
+tumour.samples.loadings<-Loadings.ordered[which(rownames(Loadings.ordered)%in%tumour.samples.pc),]
+BTIC.samples.pc<-grep("cell", rownames(Loadings.ordered), value = TRUE)
+BTIC.samples.loadings<-Loadings.ordered[which(rownames(Loadings.ordered)%in%BTIC.samples.pc),]
+
+wilcox.test(tumour.samples.loadings$Comp.2, BTIC.samples.loadings$Comp.2, paired = T) # p-value = 5.821e-11
+
+
+# Subtype <-factor(cancer.dat.cor$Subtype)
+# Group <- factor(cancer.dat.cor$Tissue) 
+# ggplot(Loadings,aes(Comp.2,Comp.3))+
+#   geom_point(aes(shape=Group,color=Subtype,fill=Subtype),size=5)+
+#   scale_shape_manual(values=c(21,22)) +
+#   theme_bw() +
+#   xlab("PC1 (23.7% variance)") + 
+#   ylab("PC2 (7.8% variance)")
+
+
+# ggplot of PC3 vs PC4 for tissue type differences
+### in ggplot need to adjust for probe offset PC so plot Comp.5 vs Comp.6 to represent PC4 vs PC5
+Diagnosis<-factor(cancer.dat.cor$Diagnosis)
+Parental_Subtype<-factor(cancer.dat.cor$Parental_Tumour_Subtype)
+ggplot(Loadings,aes(Comp.4,Comp.5))+
+  geom_point(aes(shape=Diagnosis,color=Parental_Subtype,fill=Parental_Subtype),size=5)+
+  scale_shape_manual(values=c(21,22,23)) +
+  theme_bw() +
+  xlab("PC3 (6.1% variance)") + 
+  ylab("PC4 (4.1% variance)")
+
+```
+
+```{r}
+# subset out matched BTICs
+BTIC.samples <- grep("cell", cancer.dat.cor$Tissue)
+BTICs.cancer.dat<-cancer.dat.cor[,BTIC.samples]
+BTICs.cancer.dat.or<-BTICs.cancer.dat[,order(BTICs.cancer.dat$Patient_ID)]
+sampleNames(BTICs.cancer.dat.or)
+
+# subset out matched GBMs
+tumour.samples<- grep("tumour", cancer.dat.cor$Tissue)
+tumours.cancer.dat<-cancer.dat.cor[,tumour.samples]
+tumours.cancer.dat.or<-tumours.cancer.dat[,order(tumours.cancer.dat$Patient_ID)]
+sampleNames(tumours.cancer.dat.or)
+
+# check if patient order number is identical in both datasets
+identical(BTICs.cancer.dat.or$Patient_ID, tumours.cancer.dat.or$Patient_ID)
+```
+
+#### Beta Distributions
+```{r}
+Beta_Data<-betas(cancer.dat.cor)
+dim(Beta_Data)
+Beta_sample<-Beta_Data[sample(1:nrow(Beta_Data), 10000),] # take a random sample of 10,000 probes to plot distribution, otherwise this plot takes forever for dataset with all probes! 
+## Beta distribtuions 
+Beta_sample_melted<- melt(Beta_sample)
+#remove NAs before plotting (otherwise get many non-inifnite warnings)
+Beta_Plot<-Beta_sample_melted[which(!(is.na(Beta_sample_melted$value))),]
+head(Beta_Plot)
+#add meta
+meta<-pData(cancer.dat.cor)
+meta$Sample_name<-rownames(meta)
+Beta_Plot<-merge(Beta_Plot,meta, by.x="X2", by.y="Sample_name")
+head(Beta_Plot)
+
+ggplot(Beta_Plot, aes(value, group=X2, color=Sample_Group))+
+  geom_density() + 
+  scale_color_manual(values=c("#e9a3c9",  "#91bfdb"), name="Origin")+ 
+  theme_bw()
+
+# plot 246_cell and 85_cell sample's beta distribution
+samples<-c("246_cell", "85_cell")
+plot_246_85<-Beta_Plot[which(Beta_Plot$X2%in%samples),]
+ggplot(plot_246_85, aes(value, group=X2, color=Sample_Group))+
+  geom_density() + 
+  scale_color_manual(values=c("#e9a3c9",  "#91bfdb"), name="Origin")+ 
+  theme_bw()
+```
+
+#### Hierarchical Clustering
+```{r fig.width=10, fig.height=3}
+# Beta_Data<-betas(cancer.dat.cor)
+# # remove rows with NAs
+# beta_cluster<-Beta_Data[complete.cases(Beta_Data),]
+# identical(colnames(Beta_Data), rownames(meta.cancer))
+# # Emulate ggplot default colours from beta distributions
+# gg_color_hue <- function(n) {
+#   hues = seq(15, 375, length=n+1)
+#   hcl(h=hues, l=65, c=100)[1:n]
+# }
+# 
+# # plot clustering with color function
+#     plotHclustColors <- function(matrix,leafcolor) {
+#       colnames(matrix) <- leafcolor
+#       d <- dist(t(matrix))
+#       hc <- hclust(d, method = "average") #single, complete, average, ward
+#      # color<-rep(brewer.pal(8,"Dark2"),ceiling(length(unique(leafcolor))/12))
+#      color<-c("#00B0F6", "#F8766D")
+#       labelColors <- color[sample(1:length(color),length(unique(leafcolor)))]
+#       colLab <- function(n) {
+#         if (is.leaf(n)) {
+#           a <- attributes(n)
+#           labCol <- labelColors[which(unique(leafcolor) == a$label)]
+#           attr(n, "nodePar") <- c(a$nodePar, lab.col=labCol)
+#         }
+#         n
+#       }
+#       clusDendro <- dendrapply(as.dendrogram(hc), colLab)
+#       plot(clusDendro)
+#     }
+# 
+# # Plot dendrogram
+# par(cex=0.7)
+# plotHclustColors(beta_cluster, meta.cancer$Tissue) #all samples
+
+
+## Heatmap
+# define colour palette
+BuPu <- colorRampPalette(brewer.pal(10,"RdYlBu")[1:10])(30)
+cor <- cor(betas(cancer.dat.cor), use = "pairwise.complete.obs")
+# define coloured variables
+str(pData(cancer.dat.cor))
+colnames(pData(cancer.dat.cor))
+tissueCol <- as.numeric(factor(cancer.dat.cor$Tissue))
+tissueCol <- gsub("1", "#fc8d59",  gsub("2", "#99d594", tissueCol))
+batchCol <- as.numeric(factor(cancer.dat.cor$Batch))
+batchCol <- gsub("1", "orange",  gsub("2", "purple", batchCol))
+sentrixCol <- as.character (as.numeric(factor(cancer.dat.cor$Sentrix_ID)))
+DiagnosisCol <- as.character (as.numeric(factor(cancer.dat.cor$Diagnosis)))
+DiagnosisCol <- gsub("1", "maroon",  gsub("2", "orange", gsub("3", "forestgreen", DiagnosisCol)))
+SubtypeCol<- as.numeric(factor(cancer.dat.cor$Subtype))
+SubtypeCol <- gsub("1", "#F8766D",  gsub("2", "#7CAE00", gsub("3", "#00BFC4", gsub("4", "#C77CFF", SubtypeCol))))
+heatmap.2(cor,
+          trace = "none", col = BuPu, dendrogram = "col",
+           cexRow = 0.5,
+          ColSideColors = tissueCol,
+          cexCol = 0.5,
+           keysize=1, 
+          #( "bottom.margin", "left.margin", "top.margin", "left.margin" )
+          key.par=list(mar=c(2,0.5,2,0.5)))
+
+
+
+legend("topright",legend = c("tumour", "cell"), 
+    col = c("#99d594", "#fc8d59"), 
+    lty= 1,             
+    lwd = 8            
+)
+
+legend("bottomleft",legend = c("Classical", "Mesenchymal", "Proneural", "Unknown"), 
+    col = c("#F8766D", "#7CAE00", "#00BFC4", "#C77CFF"), 
+    lty= 1,             
+    lwd = 8            
+)
+
+## Heatmap
+# define colour palette
+BuPu <- colorRampPalette(brewer.pal(6,"RdYlBu")[1:10])(20)
+cor <- cor(betas(cancer.dat.cor), use = "pairwise.complete.obs")
+# define coloured variables
+str(pData(cancer.dat.cor))
+colnames(pData(cancer.dat.cor))
+tissueCol <- as.numeric(factor(cancer.dat.cor$Tissue))
+tissueCol <- gsub("1", "#fc8d59",  gsub("2", "#99d594", tissueCol))
+DiagnosisCol <- as.character (as.numeric(factor(cancer.dat.cor$Diagnosis)))
+DiagnosisCol <- gsub("1", "maroon",  gsub("2", "gold", gsub("3", "gray", DiagnosisCol)))
+SexCol <- as.character (as.numeric(factor(cancer.dat.cor$Sex)))
+SexCol <- gsub("1", "pink",  gsub("2", "dodgerblue", SexCol))
+clab <- cbind(tissueCol, SexCol, DiagnosisCol)
+colnames(clab)<-c("Tissue", "Sex", "Diagnosis")
+
+library(heatmap3)
+heatmap3(cor,
+          trace = "none", col = BuPu, dendrogram = "col",
+           cexRow = 0.5,
+          ColSideColors = clab,
+          cexCol = 0.5,
+           keysize=1, 
+          #( "bottom.margin", "left.margin", "top.margin", "left.margin" )
+          key.par=list(mar=c(2,0.5,2,0.5)))
+
+# heatmap palette colouring is off for heatmap3 function; don't know how to fix that but will use the top variable colouring from this plot and append to previous heatmap using Adobe Illustrator. 
+
+# # cluster just the tumour samples
+# cor.tumours <- cor(betas(tumours.cancer.dat.or), use = "pairwise.complete.obs")
+# SubtypeCol.t<- as.numeric(factor(tumours.cancer.dat.or$Subtype))
+# SubtypeCol.t <- gsub("1", "#F8766D",  gsub("2", "#7CAE00", gsub("3", "#00BFC4", gsub("4", "#C77CFF", SubtypeCol.t))))
+# heatmap.2(cor.tumours,
+#           trace = "none", col = BuPu, dendrogram = "both",
+#           cexRow = 1,
+#           ColSideColors = SubtypeCol.t,
+#           cexCol = 1,
+#           keysize = 1)
+# 
+# # cluster just the BTIC samples
+# cor.BTICs <- cor(betas(BTICs.cancer.dat.or), use = "pairwise.complete.obs")
+# SubtypeCol.b<- as.numeric(factor(BTICs.cancer.dat.or$Subtype))
+# SubtypeCol.b <- gsub("1", "#F8766D",  gsub("2", "#7CAE00", gsub("3", "#00BFC4", gsub("4", "#C77CFF", SubtypeCol.b))))
+# heatmap.2(cor.BTICs,
+#           trace = "none", col = BuPu, dendrogram = "both",
+#           cexRow = 1,
+#           ColSideColors = SubtypeCol.b,
+#           cexCol = 1,
+#           keysize = 1)
+# 
+
+```
+
+### BTIC vs GBM Tumour Volcano Plot of Site-Specific Hits from Paired Testing
+
+```{r}
+BTIC.samples <- grep("cell", cancer.dat.cor$Tissue)
+BTICs.cancer.dat<-cancer.dat.cor[,BTIC.samples]
+BTICs.cancer.dat.or<-BTICs.cancer.dat[,order(BTICs.cancer.dat$Patient_ID)]
+
+
+# subset out matched GBMs
+tumour.samples<- grep("tumour", cancer.dat.cor$Tissue)
+tumours.cancer.dat<-cancer.dat.cor[,tumour.samples]
+tumours.cancer.dat.or<-tumours.cancer.dat[,order(tumours.cancer.dat$Patient_ID)]
+
+
+# check if patient order number is identical in both datasets
+identical(BTICs.cancer.dat.or$Patient_ID, tumours.cancer.dat.or$Patient_ID) # TRUE
+
+# subset down betas from each dataset to just MGMT promoter probes
+head(BTIC.betas<-betas(BTICs.cancer.dat.or))
+head(tumours.betas<-betas(tumours.cancer.dat.or))
+identical(rownames(BTIC.betas), rownames(tumours.betas)) # TRUE
+
+# # define a function to perform Wilcoxon signed rank test for each probe between the two tissues
+differential.tissues<-function(a, b){
+  output<-lapply(1:nrow(a), function(cpg){
+    stuff<-wilcox.test(a[cpg,], b[cpg,], paired=T, exact=T)
+    data.frame(site=rownames(a)[cpg], pval=stuff$p.value)
+  })
+  do.call(rbind, output)
+}
+# 
+#  # run wilcoxon rank test across all probes between the tissues (ordered in the same way)
+differential.dat<-differential.tissues(BTIC.betas, tumours.betas) # this takes a long time
+differential.dat$adj.pval<-p.adjust(differential.dat$pval, method="BH")
+head(differential.dat)
+
+# calculate delta betas from two beta matrices of buccal and PMBC with samples in the same order
+delta.betas.calc<-function(a,b){
+  summation<-unlist(lapply(1:nrow(a), function(cpg){
+    mean(a[cpg,]-b[cpg,])}))
+}
+# 
+identical(as.character(differential.dat$site), rownames(BTIC.betas)) # TRUE
+differential.dat$dB<-delta.betas.calc(tumours.betas,BTIC.betas)
+ 
+dim(site.specific.hits<-differential.dat[which(differential.dat$adj.pval<=0.001 & abs(differential.dat$dB)>=0.2),]) # 60,826 significant differentially methylated sites (at FDR < 0.001 and dB >= 0.2)
+site.specific.hits.ordered<-site.specific.hits[order(site.specific.hits$adj.pval),]
+tail(site.specific.hits.ordered) # adjusted p-value of ~0.001 corresponds to p-value of 0.0003057453
+#checking numbers of probes meeting cutoffs so dont need to do
+sta_delbeta_brbr<-differential.dat$dB[which(differential.dat$adj.pval<=0.001)] 
+sta_delbeta_brbr<-sta_delbeta_brbr[abs(sta_delbeta_brbr)>=0.20] 
+length(sta_delbeta_brbr) # 60826 hits that pass FDR = 0.001 and delta Beta cutoff of 0.20
+length(sta_delbeta_brbr[which(sta_delbeta_brbr>=0.2)]) ##  17291 are hypermethylated in tumour compared to BTIC
+length(sta_delbeta_brbr[which(sta_delbeta_brbr<=(-0.2))]) ## 43535 are hypomethylated in tumour compared BTIC
+
+
+# save(differential.dat, file="Wilcoxon_Test_Differential_Methylation_Cancer.dat.RData")
+
+
+## assign colours for each point in plot based on statistical and biological significance thresholds
+color3<-sapply(1:nrow(differential.dat), function(x) if(differential.dat$adj.pval[x]<=0.001){
+  if(abs(differential.dat$dB[x])>0.2){
+    if(differential.dat$dB[x]>0.2){"Greater methylation in Tumour\n(with Potential Biological Impact)"}else{"Less methylation in Tumour\n (with Potential Biological Impact)"}
+    }else{if(differential.dat$dB[x]>0){"Greater methylation in Tumour"}else{"Less methylation in Tumour"}}}else{"Not Significantly Different"})
+differential.dat$Interesting_CpG3<-color3
+
+
+
+#Amazing Volcano Plot Courtesy of Yours Truly, Rachel Edgar
+library(scales)
+ggplot(differential.dat, aes(dB, -log10(adj.pval), color=Interesting_CpG3))+geom_point(shape=19, size=1)+theme_bw()+scale_color_manual(values=c(muted("red", l=80, c=30),"red",muted("blue", l=70, c=40),"blue","grey"), name = "Legend")+geom_vline(xintercept=c(-0.2,0.2), color="grey60")+geom_hline(yintercept=-log10(0.001), color="grey60")+ylab("-log10(adjusted p-value)")+xlab("DNAm Difference (Tumour - BTIC)")+xlim(-1, 1)
+
+ggsave("Volcano_Nov_24_2017.png", width = 288, height = 186, units = "mm", dpi = 1000)
+```
+
+
+```{r}
+
+# ## corrected Patient_ID for 156_cell (which was mislabled to 169)
+# # id<-as.character(pData(cancer.dat.cor)$Patient_ID)
+# # id[which(id=="169")]<-"156"
+# # pData(cancer.dat.cor)$Patient_ID<-as.factor(id)
+# # str(pData(cancer.dat.cor))
+# 
+# 
+# # save(cancer.dat.cor, file = "Cancer.dat.cor.RData")
+# 
+# ### Linear regression analysis with paired testing
+# # make model matrix
+# design.matched<- model.matrix(~Tissue + Patient_ID, pData(cancer.dat.cor))
+# # fit model
+# fit.matched <- lmFit(exprs(cancer.dat.cor), design.matched)
+# # use Bayesian model to generate moderated statistics
+# fit.matched.moderated <- eBayes(fit.matched)
+# colnames(fit.matched.moderated)
+# # generate topTable linear regression outputs
+# dim(topT.matched.pairs <- topTable(fit.matched.moderated, coef="Tissuetumour" , adjust = "BH", number = Inf)) 
+# hist(topT.matched.pairs$P.Value, breaks=40, main="Unadj. P-val distribution for Tissue Effects (Paired Analysis)", xlab="Unadjusted p-value", ylab="Frequency", col="deeppink4")
+# 
+# # (Tissue.Pvalplot <- ggplot(topT.matched.pairs, aes(x = P.Value)) + geom_histogram(aes(y = ..density..), binwidth = 0.5, colour = "deeppink4", fill = "deeppink", alpha = 0.5) + geom_density(size = 1) + xlab("unadjusted P-value") + ylab("Frequency") + ggtitle(expression(atop("Unadj. P-val distribution for Tissue Effects"))))
+# 
+# table(pData(cancer.dat.cor)$Patient_ID)
+# # calculate delta betas for all hits in topTable across all the pairs
+# delta.betas.calc<-function(x){
+#   sum<-(x[,"100_tumour"]-x[,"100_cell_rep"]) + (x[,"119_tumour"]-x[,"119_cell"]) + (x[,"126_tumour"]-x[,"126_cell"]) + (x[,"127_tumour"]-x[,"127_cell"]) + (x[,"140_tumour"]-x[,"140_cell"]) + (x[,"143_tumour"]-x[,"143_cell"])+ (x[,"147_tumour"]-x[,"147_cell"])+ (x[,"156_tumour"]-x[,"156_cell"])+ (x[,"161_tumour"]-x[,"161_cell"]) + (x[,"167_tumour"]-x[,"167_cell"]) + (x[,"172_tumour"]-x[,"172_cell"]) + (x[,"181_tumour"]-x[,"181_cell"]) + (x[,"191_tumour"]-x[,"191_cell"]) + (x[,"194_tumour"]-x[,"194_cell"]) + (x[,"198_tumour"]-x[,"198_cell"]) + (x[,"206_tumour"]-x[,"206_cell"])+ (x[,"208_tumour"]-x[,"208_cell"]) + (x[,"220_tumour"]-x[,"220_cell"])+ (x[,"238_tumour"]-x[,"238_cell"])+ (x[,"245_tumour"]-x[,"245_cell"])+ (x[,"246_tumour"]-x[,"246_cell"])+ (x[,"248_tumour"]-x[,"248_cell"])+ (x[,"280_tumour"]-x[,"280_cell"])+ (x[,"284_tumour"]-x[,"284_cell"])+ (x[,"41_tumour"]-x[,"41_cell"])+ (x[,"50_tumour"]-x[,"50_cell"])+ (x[,"53_tumour"]-x[,"53_cell"])+ (x[,"67_tumour"]-x[,"67_cell"])+ (x[,"69_tumour"]-x[,"69_cell"])+ (x[,"73_tumour"]-x[,"73_cell"])+ (x[,"75_tumour"]-x[,"75_cell"])+ (x[,"84_tumour"]-x[,"84_cell"])+ (x[,"85_tumour"]-x[,"85_cell"])+ (x[,"89_tumour"]-x[,"89_cell"])+ (x[,"94_tumour"]-x[,"94_cell"])
+#   avg<-sum/35
+# }
+# top.hits.df<-betas(cancer.dat.cor)[rownames(topT.matched.pairs),]
+# identical(rownames(topT.matched.pairs), rownames(top.hits.df))
+# # calculate delta betas for each probe in topTable and add as a column to topTable (should have all probes in filtered dataset)
+# topT.matched.pairs$dB<-delta.betas.calc(top.hits.df)
+# summary(topT.matched.pairs$dB)
+# head(topT.matched.pairs)
+# 
+# # create data frame of all sites with adjusted p-value and corresponding delta beta difference
+# volcano_BrBr<-data.frame(Adjusted_Pvalue=topT.matched.pairs$adj.P.Val, Delta_Beta=topT.matched.pairs$dB)
+# head(volcano_BrBr)
+# # Multi_test_corr_relaxed_BrBr vector of adjusted Pvalues
+# # delbeta_BrBr vector of delta betas 
+# 
+# dB<-0.20 #delta beta cutoff (delta beta threshold based Bibikova et al. 2011, Genomics, see legend of Figure 5)
+# Pv<-0.001 #adjusted p-value cutoff
+# 
+# #checking numbers of probes meeting cutoffs so dont need to do
+# sta_delbeta_brbr<-topT.matched.pairs$dB[which(topT.matched.pairs$adj.P.Val<=0.001)] 
+# sta_delbeta_brbr<-sta_delbeta_brbr[abs(sta_delbeta_brbr)>=0.20] 
+# length(sta_delbeta_brbr) # 57930 hits that pass FDR = 0.001 and delta Beta cutoff of 0.20
+# length(sta_delbeta_brbr[which(sta_delbeta_brbr>=dB)]) ##  16494 are hypermethylated in tumour compared to BTIC
+# length(sta_delbeta_brbr[which(sta_delbeta_brbr<=(-dB))]) ## 41436 are hypomethylated in tumour compared BTIC
+# 
+# ## assign colours for each point in plot based on statistical and biological significance thresholds
+# color3<-sapply(1:nrow(volcano_BrBr), function(x) if(volcano_BrBr$Adjusted_Pvalue[x]<=Pv){
+#   if(abs(volcano_BrBr$Delta_Beta[x])>dB){
+#     if(volcano_BrBr$Delta_Beta[x]>dB){"Greater methylation in Tumour\n(with Potential Biological Impact)"}else{"Less methylation in Tumour\n (with Potential Biological Impact)"}
+#     }else{if(volcano_BrBr$Delta_Beta[x]>0){"Greater methylation in Tumour"}else{"Less methylation in Tumour"}}}else{"Not Significantly Different"})
+# volcano_BrBr$Interesting_CpG3<-color3
+# 
+# 
+# #Amazing Volcano Plot Courtesy of Yours Truly, Rachel Edgar
+# library(scales)
+# ggplot(volcano_BrBr, aes(Delta_Beta, -log10(Adjusted_Pvalue), color=Interesting_CpG3))+geom_point(shape=19, size=1)+theme_bw()+scale_color_manual(values=c(muted("red", l=80, c=30),"red",muted("blue", l=70, c=40),"blue","grey"),name="DNAm Differences Between \nMatched Tumour and BTIC-enriched\nSamples")+geom_vline(xintercept=c(-dB,dB), color="grey60")+geom_hline(yintercept=-log10(Pv), color="grey60")+ylab("-log10(adjusted p-value)")+xlab("DNA Methylation Difference (Tumour - BTIC)")+xlim(-1, 1)+theme(axis.text = element_text(size =14, color="black"),
+#           axis.title = element_text(size =20),
+#           legend.text = element_text(size =14),
+#           legend.title = element_text(size =20))+ 
+#   guides(color = guide_legend(override.aes = list(size = 4)))
+```
+
+
+### Bumphunting to identify differentially methylated regions
+
+We will use a method (ie Bumphunting) developed by Jaffe et al. 2012, *Int J Epidem* to search for differentially methylated regions (DMRs). This is different than the probe-wise regression modeling done above in which we were trying to identify specific CpG sites that are differentially methylated. Here we are trying to identify genomic regions that exhibit differential DNA methylation patterns in matched tumour vs BTIC samples. 
+
+```{r}
+### Bumphunting script adapted from Elodie and Meaghan's analyses
+
+# load required packages
+
+library("charm") 
+library("BSgenome.Hsapiens.UCSC.hg18")
+
+
+## order by chromosome location
+
+ex<- exprs(cancer.dat.cor)
+dim(ex)  # probes = 420195  n = 70
+ex.ord <- ex[order(fData(cancer.dat.cor)$CHR, fData(cancer.dat.cor)$MAPINFO),]
+probes.ord <- rownames(ex.ord)
+head(ex.ord)
+str(ex.ord)
+
+## ordered probe annotations
+chr = fData(cancer.dat.cor[probes.ord,])$CHR
+chr <- paste("chr", chr, sep="")
+pos = fData(cancer.dat.cor[probes.ord,])$MAPINFO
+seq = fData(cancer.dat.cor[probes.ord,])$ALLELEA_PROBESEQ
+pd = pData(cancer.dat.cor[probes.ord,])
+
+## redefine array regions given chromosomal coordinates
+pns = clusterMaker(chr,pos) # note: default argument maxGap = 300 which is the maximum allowable gap between probe start positions for probes to be grouped into the same region
+
+## generate model matrix for regression analyses
+mod0 = matrix(1,nrow=nrow(pd),ncol=1)
+mod = model.matrix(~ Tissue + Patient_ID, pd)
+
+### omit SVA & use Limma for linear modeling 
+thedmrs2 = dmrFind(logitp=ex.ord, svs=0, mod=mod, mod0=mod0, coeff=2, pns=pns, chr=chr, pos=pos, use.limma=TRUE) # Found 1086 potential DMRs
+
+## Obtain False Discovery Rate q-values estimated by a resampling procedure
+withq2 = qval(logitp=ex.ord, dmr=thedmrs2, numiter=1000, mc=8, return.permutations=TRUE)
+
+
+## save output
+
+# save(withq2, file="Bumphunting_output_cancer.dat.RData")
+# save(thedmrs2, file="Bumphunting_dmrs_cancer.dat.RData")
+# save(hits.to.plot, file="Bumphunting_DMR_hits_cancer.dat.RData")
+
+load("Bumphunting_output_cancer.dat.RData")
+
+## Filter down to DMRs < FDR threshold
+cancer.dat.dmrs<-withq2$q
+hits.dmrs<-cancer.dat.dmrs[which(cancer.dat.dmrs$qvalue<=0.05), ] # 872 DMRs at FDR < 0.05
+
+
+## Use CHARM to plot some of these bumps
+# cpg.cur = read.delim("http://rafalab.jhsph.edu/CGI/model-based-cpg-islands-hg19.txt", as.is=TRUE)
+# source("plotRegionsCustom.R")
+# betas.cancer<- betas(cancer.dat.cor)[probes.ord,]
+# hits.to.plot = hits.dmrs[,c("chr","start","end", "nprobes", "qvalue")]
+# str(hits.to.plot)
+# hits.to.plot$start = as.numeric(hits.to.plot$start)
+# hits.to.plot$end = as.numeric(hits.to.plot$start)
+# 
+# head(hits.dmrs)
+# ### custom function adapted from charm
+# file_name=("Example_DMRs.pdf")
+# # file_name=paste(rownames(region),"_region.png", sep="")
+# 
+# plotRegions(thetable=hits.to.plot[2,c("chr", "start", "end")], cleanp=betas.cancer, chr=chr, pos=pos, Genome=Hsapiens, cpg.islands=cpg.cur, outfile=file_name, exposure=pd$Tissue, exposure.continuous=FALSE)
+```
+
+We can see that none of the 872 DMRs identified by Bumphunting are statistically significant (at FDR = 0.05). 
+
+We will plot a few example significant DMRs (FDR < 0.05)
+
+```{r echo = FALSe}
+
+# define a function to plot target DMRs
+plot_DMR<-function(methylumi.object, Sample.Group, dmr.chr, dmr.start.coord, dmr.end.coord){
+  annotation<-fData(methylumi.object)
+inrange<-annotation[which(annotation$CHR==as.character(dmr.chr) & annotation$MAPINFO>=dmr.start.coord-100 & annotation$MAPINFO<=dmr.end.coord+100),c("TargetID","MAPINFO","CHR")]
+betas.matrix<-betas(methylumi.object)
+CpG_betas<- t(betas.matrix[rownames(inrange),])
+plot_dat <- data.frame(CpG.Betas = CpG_betas, Group = Sample.Group)
+plot_dat <- data.frame(plot_dat[,order(colnames(plot_dat))])
+test <- melt(plot_dat, id.vars = c("Group"))
+mapinfodat <- data.frame(CpG = rep(rownames(inrange), ncol(betas.matrix)), MAPINFO =
+rep(inrange$MAPINFO, ncol(betas.matrix)))
+test1 <- mapinfodat[order(mapinfodat$CpG),]
+plot_dat <- cbind(test,test1$MAPINFO)
+colnames(plot_dat)<-c("Group", "variable", "value", "Coordinate")
+plot_dat$Group <- as.factor(plot_dat$Group)
+stat_sum_single <- function(fun, geom="point", ...) {
+  stat_summary(fun.y=fun, geom=geom, size = 2,...)
+}
+ggplot(plot_dat, aes(x = Coordinate , y = value, fill = Group,colour =
+Group, group = Group)) +
+  geom_point(size =3, pch=21, color = "black") +
+  stat_sum_single(mean, geom="line") +
+  scale_fill_manual(values=c("#fc8d59","#99d594"))+
+  scale_color_manual(values=c("#fc8d59","#99d594"))+
+  theme(axis.text=element_text(colour="black", size = 10),
+        axis.title=element_text(face = "bold", colour="black", size = 10),
+title=element_text(face = "bold", colour="black", size = 16),
+legend.key.size = unit(1, "cm"), legend.title = element_text(size
+= 10),
+        legend.text = element_text(size = 10)) + theme_bw()+
+  xlab("Genomic Coordinate")+
+  ylab("DNAm (Beta Value)")
+}
+
+# select DMRs to plot
+hits.to.plot = hits.dmrs[,c("chr","start","end", "nprobes", "qvalue")]
+head(hits.to.plot)
+
+## Plot top 3 DMRs:
+
+# plot DMR chr12:4381435-4382425 (27 probes, qvalue = 0.00000)
+plot_DMR(cancer.dat.cor, cancer.dat.cor$Tissue, 12, 4381435, 4382425)
+
+# plot DMR chr6:33172028-33173038 (19 probes, qvalue = 0.0005)
+plot_DMR(cancer.dat.cor, cancer.dat.cor$Tissue, 6, 33172028, 33173038)  
+
+# plot DMR chr14:75593334-75594058 (14 probes, qvalue = 0.003)
+plot_DMR(cancer.dat.cor, cancer.dat.cor$Tissue, 14, 75593334, 75594058)   
+  
+```
+
+We will now check the DNA methylation status of the HOXA10 locus (CHR7: 27219309–27219750) whose hypermethylation has been associated with a gain of chromosome 7
+
+```{r echo=FALSE}
+# plot DMR CHR7: 27219309–27219750 
+plot_DMR(cancer.dat.cor, cancer.dat.cor$Tissue, 7, 27219309, 27219750)
+```
+
+
+We will now compute the average beta (DNA methylation) difference across the significant DMRs:
+
+```{r}
+
+sig_dmr_results<-hits.dmrs # re-name data frame of significant DMRs
+head(sig_dmr_results)
+fdat<-fData(cancer.dat.cor) # re-name all 450K probes feature data
+metadat<-pData(cancer.dat.cor) # re-name all meta data
+betas.cancer<-betas(cancer.dat.cor)
+
+# calculate delta betas from two beta matrices of matched samples in the same order
+delta.betas.calc<-function(s1,s2){
+  summation<-unlist(lapply(1:nrow(s1), function(cpg){
+    mean(s1[cpg,]-s2[cpg,])}))
+}
+
+# re-order matched samples in same order in two separate datasets
+samp.matched.dat<-cancer.dat.cor[,order(cancer.dat.cor$Patient_ID)]
+tumour.dat<-samp.matched.dat[,which(samp.matched.dat$Sample_Group=="tumour")]
+cell.dat<-samp.matched.dat[,which(samp.matched.dat$Sample_Group=="cell")]
+# identical(tumour.dat$Patient_ID, cell.dat$Patient_ID) # TRUE
+tumour.betas<-betas(tumour.dat)
+cell.betas<-betas(cell.dat)
+# identical(rownames(tumour.betas), rownames(cell.betas)) # TRUE
+all.delbetas<-delta.betas.calc(tumour.betas, cell.betas)
+del.betas.df<-data.frame(row.names=rownames(tumour.betas), Delbetas=all.delbetas)
+head(del.betas.df)
+
+dmrX <- list(fdat[1,])
+dmrY<-matrix(NA,872,3)
+colnames(dmrY)<-c("Name", "Delta.beta","Stdev.Delta.beta")
+# for chromosome number
+for (i in 1:nrow(sig_dmr_results)){
+  sig_dmr_results$chr.number[i]<-paste(substr(sig_dmr_results[i,"chr"], start=4, stop=6))
+}
+
+
+for(i in 1:nrow(sig_dmr_results)){
+dat <- sig_dmr_results[i,]
+names <- rownames(dat)
+start <- dat$start
+end <- dat$end
+chr <- dat$chr.number
+cpgdat <- subset(fdat, MAPINFO >=start & MAPINFO <=end & CHR == chr)
+delbeta.dmr<-mean(del.betas.df[rownames(cpgdat),"Delbetas"])
+stdev.dmr<-sd(del.betas.df[rownames(cpgdat),"Delbetas"])
+dmrY[i,"Name"] <- names
+dmrY[i,"Delta.beta"] <- round(delbeta.dmr, digits=3)
+dmrY[i,"Stdev.Delta.beta"] <- round(stdev.dmr, digits=3)
+}
+dmr.delbeta.df<-as.data.frame(dmrY)
+str(dmr.delbeta.df)
+dmr.delbeta.df$Name<-as.character(dmr.delbeta.df$Name)
+dmr.delbeta.df$Delta.beta<-as.numeric(dmrY[,2])
+dmr.delbeta.df$Stdev.Delta.beta<-as.numeric(dmrY[,3])
+head(dmr.delbeta.df)
+
+identical(rownames(sig_dmr_results), dmr.delbeta.df$Name) # TRUE
+
+sig_dmr_results$Avg_Delta.beta<-as.numeric(dmr.delbeta.df$Delta.beta)
+sig_dmr_results$Stdev_Delta.beta<-as.numeric(dmr.delbeta.df$Stdev.Delta.beta)
+str(sig_dmr_results)
+ggplot(sig_dmr_results, aes(Avg_Delta.beta)) + geom_density()
+```
+
+We can see that most of the DMRs have a negative average delta beta (DNA methylation difference between the groups). This means that in the majority of DMRs the BTIC DNA methylation is greater than the tumour DNA methylation. 
+
+We will now compute the average delta beta (DNA methylation difference between groups) for all DMRs and create a volcano plot of DMRs
+
+```{r echo=FALSE}
+
+
+# all_dmr_results<-cancer.dat.dmrs # re-name data frame of all DMRs
+# head(all_dmr_results)
+# fdat<-fData(cancer.dat.cor) # re-name all 450K probes feature data
+# metadat<-pData(cancer.dat.cor) # re-name all meta data
+# betas.cancer<-betas(cancer.dat.cor)
+# 
+# # calculate delta betas from two beta matrices of matched samples in the same order
+# delta.betas.calc<-function(s1,s2){
+#   summation<-unlist(lapply(1:nrow(s1), function(cpg){
+#     mean(s1[cpg,]-s2[cpg,])}))
+# }
+# 
+# # re-order matched samples in same order in two separate datasets
+# samp.matched.dat<-cancer.dat.cor[,order(cancer.dat.cor$Patient_ID)]
+# tumour.dat<-samp.matched.dat[,which(samp.matched.dat$Sample_Group=="tumour")]
+# cell.dat<-samp.matched.dat[,which(samp.matched.dat$Sample_Group=="cell")]
+# # identical(tumour.dat$Patient_ID, cell.dat$Patient_ID) # TRUE
+# tumour.betas<-betas(tumour.dat)
+# cell.betas<-betas(cell.dat)
+# identical(rownames(tumour.betas), rownames(cell.betas)) # TRUE
+# all.delbetas<-delta.betas.calc(tumour.betas, cell.betas)
+# del.betas.df<-data.frame(row.names=rownames(tumour.betas), Delbetas=all.delbetas)
+# head(del.betas.df)
+# 
+# dmrX <- list(fdat[1,])
+# dmrY<-matrix(NA,1086,3)
+# colnames(dmrY)<-c("Name", "Delta.beta","Stdev.Delta.beta")
+# # for chromosome number
+# for (i in 1:nrow(all_dmr_results)){
+#   all_dmr_results$chr.number[i]<-paste(substr(all_dmr_results[i,"chr"], start=4, stop=6))
+# }
+# 
+# 
+# for(i in 1:nrow(all_dmr_results)){
+# dat <- all_dmr_results[i,]
+# names <- rownames(dat)
+# start <- dat$start
+# end <- dat$end
+# chr <- dat$chr.number
+# cpgdat <- subset(fdat, MAPINFO >=start & MAPINFO <=end & CHR == chr)
+# delbeta.dmr<-mean(del.betas.df[rownames(cpgdat),"Delbetas"])
+# stdev.dmr<-sd(del.betas.df[rownames(cpgdat),"Delbetas"])
+# dmrY[i,"Name"] <- names
+# dmrY[i,"Delta.beta"] <- round(delbeta.dmr, digits=3)
+# dmrY[i,"Stdev.Delta.beta"] <- round(stdev.dmr, digits=3)
+# }
+# 
+# dmr.delbeta.df<-as.data.frame(dmrY)
+# str(dmr.delbeta.df)
+# dmr.delbeta.df$Name<-as.character(dmr.delbeta.df$Name)
+# dmr.delbeta.df$Delta.beta<-as.numeric(dmrY[,2])
+# dmr.delbeta.df$Stdev.Delta.beta<-as.numeric(dmrY[,3])
+# head(dmr.delbeta.df)
+# 
+# identical(rownames(all_dmr_results), dmr.delbeta.df$Name) # TRUE
+# 
+# all_dmr_results$Avg_Delta.beta<-as.numeric(dmr.delbeta.df$Delta.beta)
+# all_dmr_results$Stdev_Delta.beta<-as.numeric(dmr.delbeta.df$Stdev.Delta.beta)
+# str(all_dmr_results)
+# 
+# head(all_dmr_results)
+# 
+# ## assign colours for each point in plot based on statistical and biological significance thresholds
+# color3<-sapply(1:nrow(all_dmr_results), function(x) if(all_dmr_results$qvalue[x]<=0.05){
+#   if(abs(all_dmr_results$Avg_Delta.beta[x])>0.2){
+#     if(all_dmr_results$Avg_Delta.beta[x]>0.2){"Greater methylation in Tumour\n(with Potential Biological Impact)"}else{"Less methylation in Tumour\n (with Potential Biological Impact)"}
+#     }else{if(all_dmr_results$Avg_Delta.beta[x]>0){"Greater methylation in Tumour"}else{"Less methylation in Tumour"}}}else{"Not Significantly Different"})
+# all_dmr_results$Interesting_CpG3<-as.factor(color3)
+# levels(all_dmr_results$Interesting_CpG3)
+# 
+# 
+# head(all_dmr_results)
+# #Amazing Volcano Plot Courtesy of Yours Truly, Rachel Edgar
+# library(scales)
+# ggplot(all_dmr_results, aes(Avg_Delta.beta, -log10(qvalue), color=Interesting_CpG3))+geom_point(shape=19, size=1)+theme_bw()+scale_color_manual(values=c("red","blue","grey"),name="DMR Differences Between \nMatched Tumour and BTIC-enriched\nSamples")+geom_vline(xintercept=c(-0.2,0.2), color="grey60")+geom_hline(yintercept=-log10(0.05), color="grey60")+ylab("-log10(adjusted p-value)")+xlab("DNA Methylation Difference (Tumour - BTIC)")+xlim(-1, 1)+theme(axis.text = element_text(size =14, color="black"),
+#           axis.title = element_text(size =20),
+#           legend.text = element_text(size =14),
+#           legend.title = element_text(size =20))+ 
+#   guides(color = guide_legend(override.aes = list(size = 4)))
+
+
+```
+
+
+
+We will now map these DMRs to genes. 
+
+
+Output
+
+chr = chromosome
+start = genomic coordinate of DMR start (hg19)
+end = genomic coordinate of DMR end
+qvalue = q-value from Bumphunting DMR detection analysis
+nprobes = number of Illumina 450K DNA methylation probes underlying DMR
+Avg_Delta.beta = Averaged DNA methylation difference between groups across DMR (Tumour - BTIC)  Stdev_Delta.beta = Standard deviation of DNA methylation difference between groups across DMR
+name= Symbol of nearest gene
+annotation= RefSeq ID
+description= a factor with levels c("upstream", "promoter","overlaps 5'", "inside intron", "inside exon", "covers exon(s)","overlaps exon upstream", "overlaps exon downstream","overlaps two exons", "overlaps 3'", "close to 3'", "downstream","covers")
+region= a factor with levels c("upstream", "promoter", "overlaps 5'","inside", "overlaps 3'", "close to 3'", "downstream", "covers")
+distance= distance before 5’ end of gene
+subregion= a factor with levels c("inside intron", "inside exon","covers exon(s)", "overlaps exon upstream", "overlaps exon downstream","overlaps two exons")
+insideDistance= distance past 5’ end of gene
+exonnumber= which exon
+nexons= number of exons
+UTR= a factor with levels c("inside transcription region", "5' UTR","overlaps 5'UTR", "3'UTR", "overlaps 3'UTR", "covers transcription region")
+strand= "+" or "-"
+geneL= the gene length
+codingL= the coding length
+Entrez= Entrez ID of closest gene
+subjectHits= Index in subject of hit
+
+Note: The column "gene" is the gene nearest the query, by virtue of it owning the transcript determined (or chosen by nearest) to be nearest the query. Note that the nearest gene to a given query, in column 3, may not be unique and we arbitrarily chose one as done by default by nearest. The "distance" column is the distance from the query to the 5’ end of the nearest transcript, so may be different from the distance computed by nearest to that transcript, as a range.
+
+```{r}
+library("TxDb.Hsapiens.UCSC.hg19.knownGene")
+library("bumphunter")
+library("org.Hs.eg.db")
+
+
+dmrs.to.map<-makeGRangesFromDataFrame(sig_dmr_results)
+head(dmrs.to.map)
+genes <- annotateTranscripts(TxDb.Hsapiens.UCSC.hg19.knownGene)
+tab<- matchGenes(dmrs.to.map,genes)
+head(tab)
+head(sig_dmr_results)
+sig.dmr.final.output<-cbind(sig_dmr_results$chr, sig_dmr_results$start, sig_dmr_results$end, sig_dmr_results$qvalue, sig_dmr_results$nprobes, sig_dmr_results$Avg_Delta.beta, sig_dmr_results$Stdev_Delta.beta, tab)
+
+colnames(sig.dmr.final.output)<-c("chr", "start", "end", "qvalue",  "nprobes",          "Avg_Delta.beta",  "Stdev_Delta.beta", "name","annotation", "description","region",              "subregion", "insideDistance", "exonnumber", "nexons","UTR","strand",                          "geneL","codingL","Entrez", "subjectHits" )
+## Save output
+# write.csv(sig.dmr.final.output,file="Bumphunting_Mapped_DMR_hits_Cancer.dat.revised.csv")
+# save(sig.dmr.final.output,file="Bumphunting_Mapped_DMR_hits_Cancer.dat.revised.RData")
+```
+
+We will now look at the significant DMRs based on their genomic region
+
+```{r}
+load("Bumphunting_Mapped_DMR_hits_Cancer.dat.revised.RData")
+dim(sig.dmr.final.output) # 872 DMRs at FDR of 0.05
+table(sig.dmr.final.output$region)
+
+# plot significant DMRs based on their genomic region
+ggplot(sig.dmr.final.output, aes(region, Avg_Delta.beta, color=region)) + geom_point(position = position_jitter(width=0.40)) + theme_bw() + ylab("Average DNAm Difference (Tumour-BTIC)") + xlab("Genomic Context") + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+We will now assess the overlap between site-specific hits and DMR CpGs.
+
+```{r}
+
+## extract all site-specific hits (at FDR < 0.001 and dB > 0.2)
+load("Wilcoxon_Test_Differential_Methylation_Cancer.dat.RData")
+site.specific.hits.df<-differential.dat[which(differential.dat$adj.pval<= 0.001 & abs(differential.dat$dB)>=0.2),]
+site.specific.hits<-as.character(site.specific.hits.df$site) # 60826 site-specific hits
+
+## extract all CpGs underlying 872 significant DMRs 
+load("Bumphunting_Mapped_DMR_hits_Cancer.dat.revised.RData")
+head(sig.dmr.final.output)
+sig.dmr.final.output$chr.number<-as.numeric(gsub(pattern = "\\chr", replacement = "", sig.dmr.final.output$chr))
+cancer.fDat<-fData(cancer.dat.cor)
+
+# define a function that will take a vector of dmr coordinates and output the underlying CpGs 
+extract_DMR_CpGs<-function(x){
+dmr.chr<-as.character(sig.dmr.final.output$chr.number[x])
+dmr.start.coord<-as.numeric(as.character(sig.dmr.final.output$start[x]))
+dmr.end.coord<-as.numeric(as.character(sig.dmr.final.output$end[x]))
+inrange<-cancer.fDat[which(cancer.fDat$CHR==as.character(dmr.chr) & cancer.fDat$MAPINFO>=dmr.start.coord & cancer.fDat$MAPINFO<=dmr.end.coord),c("TargetID","MAPINFO","CHR")]
+CpGs<- as.character(inrange$TargetID)
+return(CpGs)
+}
+
+cancer.dmrs.cpgs<-unlist(sapply(1:nrow(sig.dmr.final.output), extract_DMR_CpGs)) # 4968 underlying the 872 significant DMRs
+
+
+length(intersect(site.specific.hits,cancer.dmrs.cpgs)) # 4838 CpGs overlap (4838/4968 = 97% overlap)
+cancer.dat.450K.probes<-as.character(cancer.fDat$ILMNID)
+
+# permutation testing for overlap of site-specific hits and DMR CpGs
+length(site.specific.hits) # 57930 site-specific hits
+length(cancer.dmrs.cpgs) # 4968 cancer DMR CpGs
+length(cancer.dat.450K.probes) # 420195 possible CpGs
+
+# permutation function
+Permutate_overlap<-function(probe_list1, probe_list2, all_sites){ 
+  len1<-length(probe_list1) 
+  len2<-length(probe_list2) 
+  rnd1<-all_sites[sample(1:length(all_sites), len1)] 
+  rnd2<-all_sites[sample(1:length(all_sites), len2)] 
+  length(intersect(rnd1, rnd2)) } 
+
+# run permutations
+expected_overlap<-sapply(1:10000, function(seed){  
+  set.seed(seed) 
+  Permutate_overlap(site.specific.hits, cancer.dmrs.cpgs, cancer.dat.450K.probes) 
+  }) 
+
+mean(expected_overlap) 
+sd(expected_overlap)
+
+
+# compute p-value from permutation testing
+real_overlap<-length(intersect(site.specific.hits, cancer.dmrs.cpgs))
+p.cancer=(length(which(expected_overlap>=real_overlap)+1))/(length(expected_overlap)+1) 
+p.cancer # p = 0 # Based on 10^4 trials of Monte Carlo simulations, p = 0 for the likelihood of the observed proportion of site-specific hits overlapping with DMR CpGs 
+
+expected_overlap<-as.data.frame(expected_overlap)
+
+ggplot(data = expected_overlap, aes(expected_overlap)) +  geom_histogram(bins = 40) +  geom_vline(xintercept = real_overlap, colour="red", linetype = "longdash") +  labs(x = "Number of Overlaps") +  theme_bw(base_size = 18)
+
+# ### identify CpG probe with maximum delta beta in DMR
+# 
+# fdat<-fData(cancer.dat.cor) # re-name all 450K probes feature data
+# metadat<-pData(cancer.dat.cor) # re-name all meta data
+# betas.cancer<-betas(cancer.dat.cor)
+# 
+# # calculate delta betas from two beta matrices of matched samples in the same order
+# delta.betas.calc<-function(s1,s2){
+#   summation<-unlist(lapply(1:nrow(s1), function(cpg){
+#     mean(s1[cpg,]-s2[cpg,])}))
+# }
+# 
+# # re-order matched samples in same order in two separate datasets
+# samp.matched.dat<-cancer.dat.cor[,order(cancer.dat.cor$Patient_ID)]
+# tumour.dat<-samp.matched.dat[,which(samp.matched.dat$Sample_Group=="tumour")]
+# cell.dat<-samp.matched.dat[,which(samp.matched.dat$Sample_Group=="cell")]
+# identical(tumour.dat$Patient_ID, cell.dat$Patient_ID) # TRUE
+# tumour.betas<-betas(tumour.dat)
+# cell.betas<-betas(cell.dat)
+# identical(rownames(tumour.betas), rownames(cell.betas)) # TRUE
+# all.delbetas<-delta.betas.calc(tumour.betas, cell.betas)
+# del.betas.df<-data.frame(CpG=rownames(tumour.betas), Delbetas=all.delbetas)
+# head(del.betas.df)
+# 
+# dmrX <- list(fdat[1,])
+# dmrY<-matrix(NA,872,3)
+# colnames(dmrY)<-c("Name", "Max.Probe","Max.Delta.beta")
+# # for chromosome number
+# for (i in 1:nrow(sig.dmr.final.output)){
+#   sig.dmr.final.output$chr.number[i]<-paste(substr(sig.dmr.final.output[i,"chr"], start=4, stop=6))
+# }
+# 
+# 
+# for(i in 1:nrow(sig.dmr.final.output)){
+# print(i)
+# dat <- sig.dmr.final.output[i,]
+# names <- rownames(dat)
+# start <- dat$start
+# end <- dat$end
+# chr <- dat$chr.number
+# cpgdat <- subset(fdat, MAPINFO >=start & MAPINFO <=end & CHR == chr)
+# delbeta.dmr<-del.betas.df[which(del.betas.df$CpG%in%rownames(cpgdat)),]
+# max.delbeta.df<-delbeta.dmr[which.max(abs(delbeta.dmr$Delbetas)),]
+# max.CpG<-as.character(max.delbeta.df$CpG)
+# max.delbeta<-max.delbeta.df$Delbetas
+# stdev.dmr<-sd(del.betas.df[rownames(cpgdat),"Delbetas"])
+# dmrY[i,"Name"] <- names
+# dmrY[i,"Max.Probe"] <- max.CpG
+# dmrY[i,"Max.Delta.beta"] <- round(max.delbeta, 4)
+# }
+# 
+# 
+# dmr.max.delbeta.df<-as.data.frame(dmrY[,c("Max.Probe", "Max.Delta.beta")])
+# dmr.max.delbeta.df$Max.Probe<-as.character(dmr.max.delbeta.df$Max.Probe)
+# dmr.max.delbeta.df$Max.Delta.beta<-as.numeric(dmr.max.delbeta.df$Max.Delta.beta)
+# head(dmr.max.delbeta.df)
+# write.csv(dmr.max.delbeta.df, "Sig_Cancer_DMR_Max_Deltabeta_Probes.csv")
+
+
+load("Bumphunting_Mapped_DMR_hits_Cancer.dat.revised.RData")
+head(sig.dmr.final.output)
+
+## clusterProfiler 
+# https://www.bioconductor.org/packages/devel/bioc/vignettes/clusterProfiler/inst/doc/clusterProfiler.html
+# source("https://bioconductor.org/biocLite.R")
+# biocLite("clusterProfiler")
+# library("clusterProfiler")
+# library(org.Hs.eg.db)
+# 
+# gene<-as.character(sig.dmr.final.output$name)
+# gene.df <- bitr(gene, fromType = "SYMBOL", toType = c("ENSEMBL", "ENTREZID"), annoDb="org.Hs.eg.db")
+# # GO over-representation test
+# head(gene.df)
+# ego3 <- enrichGO(gene         = gene.df$ENTREZID,
+#                  organism = "human",
+#                  ont           = "CC",
+#                  pAdjustMethod = "BH",
+#                  pvalueCutoff  = 0.01,
+#                  qvalueCutoff  = 0.05)
+# head(summary(ego3))
+# dotplot(ego3, showCategory=12)
+# enrichMap(ego3, vertex.label.cex=1.2, layout=igraph::layout.kamada.kawai)
+# cnetplot(ego3)
+# barplot(ego3, showCategory=8)
+
+### plot all HOX genes in significant DMRs
+
+gene<-as.character(sig.dmr.final.output$name)
+hox.hits<-grep("HOX", gene, value=TRUE)
+hox.hits.dmr.df<-sig.dmr.final.output[which(sig.dmr.final.output$name%in%hox.hits),]
+hox.hits.dmr.df.ordered<-hox.hits.dmr.df[order(hox.hits.dmr.df$chr, hox.hits.dmr.df$start),]
+hox.hits.dmr.df.ordered$name <- as.character(hox.hits.dmr.df.ordered$name)
+hox.hits.dmr.df.ordered$Absolute_Delta.beta<-abs(hox.hits.dmr.df.ordered$Avg_Delta.beta)
+# ggplot(hox.hits.dmr.df.ordered, aes(x = name, y = Avg_Delta.beta)) + 
+#   geom_point(aes(size = qvalue), shape = 21, fill = "dodgerblue") + theme_bw() +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+#   ylab("Average DNAm difference across DMR (Tumour - BTIC)") +
+#   xlab("Gene Name")
+
+ggplot(hox.hits.dmr.df.ordered, aes(x = name, y = -log10(qvalue))) + 
+  geom_point(aes(size = Absolute_Delta.beta), shape = 21, fill = "dodgerblue") + theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylab("-log10(adjusted pvalue)") +
+  xlab("Gene Name")
+
+# write.csv(hox.hits.dmr.df.ordered, "Sig_HOX_DMRs_Cancer.dat.csv")
+
+hox.hits.dmr.df.ordered.rev<-hox.hits.dmr.df[order(hox.hits.dmr.df$qvalue),] # order HOX DMR hits by q-value
+(hox.hits.plot<-hox.hits.dmr.df.ordered.rev[1:4, c("chr", "start", "end", "name", "Avg_Delta.beta")]) # top 4 hits
+
+
+# define a function to plot target DMRs
+plot_DMR<-function(methylumi.object, Sample.Group, dmr.chr, dmr.start.coord, dmr.end.coord){
+  annotation<-fData(methylumi.object)
+inrange<-annotation[which(annotation$CHR==as.character(dmr.chr) & annotation$MAPINFO>=dmr.start.coord-100 & annotation$MAPINFO<=dmr.end.coord+100),c("TargetID","MAPINFO","CHR")]
+betas.matrix<-betas(methylumi.object)
+CpG_betas<- t(betas.matrix[rownames(inrange),])
+plot_dat <- data.frame(CpG.Betas = CpG_betas, Group = Sample.Group)
+plot_dat <- data.frame(plot_dat[,order(colnames(plot_dat))])
+test <- melt(plot_dat, id.vars = c("Group"))
+mapinfodat <- data.frame(CpG = rep(rownames(inrange), ncol(betas.matrix)), MAPINFO =
+rep(inrange$MAPINFO, ncol(betas.matrix)))
+test1 <- mapinfodat[order(mapinfodat$CpG),]
+plot_dat <- cbind(test,test1$MAPINFO)
+colnames(plot_dat)<-c("Group", "variable", "value", "Coordinate")
+plot_dat$Group <- as.factor(plot_dat$Group)
+stat_sum_single <- function(fun, geom="point", ...) {
+  stat_summary(fun.y=fun, geom=geom, size = 2,...)
+}
+ggplot(plot_dat, aes(x = Coordinate , y = value, fill = Group,colour =
+Group, group = Group)) +
+  geom_point(size =3, pch=21, color = "black") +
+  stat_sum_single(mean, geom="line") +
+  scale_fill_manual(values=c("#fc8d59","#99d594"))+
+  scale_color_manual(values=c("#fc8d59","#99d594"))+
+  theme(axis.text=element_text(colour="black", size = 10),
+        axis.title=element_text(face = "bold", colour="black", size = 10),
+title=element_text(face = "bold", colour="black", size = 16),
+legend.key.size = unit(1, "cm"), legend.title = element_text(size
+= 10),
+        legend.text = element_text(size = 10)) + theme_bw()+
+  xlab("Genomic Coordinate")+
+  ylab("DNAm (Beta Value)")
+}
+
+library("gridExtra")
+grid.arrange(plot_DMR(cancer.dat.cor, cancer.dat.cor$Tissue, 7, 27187269, 27188020), plot_DMR(cancer.dat.cor, cancer.dat.cor$Tissue, 7, 27224568, 27225143), plot_DMR(cancer.dat.cor, cancer.dat.cor$Tissue, 2, 176986956, 176987605), plot_DMR(cancer.dat.cor, cancer.dat.cor$Tissue, 7, 27231819, 27233141), ncol = 2, nrow =2)
+
+## extract all underlying CpGs in HOX DMRs
+head(hox.hits.dmr.df)
+hox.hits.dmr.df$chr.number<-as.numeric(gsub(pattern = "\\chr", replacement = "", hox.hits.dmr.df$chr))
+cancer.fDat<-fData(cancer.dat.cor)
+
+# define a function that will take a vector of dmr coordinates and output the underlying CpGs 
+extract_DMR_CpGs<-function(x){
+dmr.chr<-as.character(hox.hits.dmr.df$chr.number[x])
+dmr.start.coord<-as.numeric(as.character(hox.hits.dmr.df$start[x]))
+dmr.end.coord<-as.numeric(as.character(hox.hits.dmr.df$end[x]))
+inrange<-cancer.fDat[which(cancer.fDat$CHR==as.character(dmr.chr) & cancer.fDat$MAPINFO>=dmr.start.coord & cancer.fDat$MAPINFO<=dmr.end.coord),c("TargetID","MAPINFO","CHR")]
+CpGs<- as.character(inrange$TargetID)
+return(CpGs)
+}
+
+hox.dmrs.cpgs<-unlist(sapply(1:nrow(hox.hits.dmr.df), extract_DMR_CpGs)) # 161 underlying the 26 significant DMRs
+
+# write.csv(hox.dmrs.cpgs, "HOX_DMR_CpGs.csv")
+```
+
+
+
+### Comparison of DNA methylation variability between matched GBM tumours and BTICs
+
+We will assess probewise DNA methylation variability in matched tumour vs BTIC samples. Specifically, as our variability metric we will calculate the reference range which we define as the range of DNA methylation values from the 10th - 90th percentile of samples. This metric is robust to outliers and therefore appropriate for our small sample set. 
+
+```{r echo=FALSE}
+cancer.dat.ordered<-cancer.dat.cor[,order(cancer.dat.cor$Patient_ID)]
+tumour.dat<-cancer.dat.ordered[,which(cancer.dat.ordered$Tissue=="tumour")]
+cell.dat<-cancer.dat.ordered[,which(cancer.dat.ordered$Tissue=="cell")]
+identical(tumour.dat$Patient_ID, cell.dat$Patient_ID) # TRUE
+betas.tumour<-betas(tumour.dat)
+betas.cell<-betas(cell.dat)
+identical(rownames(betas.tumour), rownames(betas.cell)) #TRUE
+
+# define a function to calculate reference range (ie 10-90 percentile range) in each of the tissue datasets
+Variability<-function(x) {quantile(x, c(0.9), na.rm=T)[[1]]-quantile(x, c(0.1), na.rm=T)[[1]]}
+
+
+# calculate reference range in all tumour samples and cell samples separately (note this code takes a long time)
+tumour.variability<-sapply(1:nrow(betas.tumour), function(y) Variability(betas.tumour[y,])) 
+cell.variability<-sapply(1:nrow(betas.cell), function(y) Variability(betas.cell[y,])) 
+
+# create separate data frames for outputs
+head(tumour.var.dat<-data.frame(site=rownames(betas.tumour), Ref_Range=tumour.variability))
+head(cell.var.dat<-data.frame(site=rownames(betas.cell), Ref_Range=cell.variability))
+
+var.dat<-data.frame(site=tumour.var.dat$site, Cell_ref_range=cell.variability, Tumour_ref_range=tumour.variability)
+
+# save(var.dat, file="Cancer.dat_Variability_Ref_Range.RData")
+load("Cancer.dat_Variability_Ref_Range.RData")
+head(var.dat)
+
+
+# Plot the density distributions of reference range for buccal vs bs
+tumour.range.dat<-data.frame(site=var.dat$site, Ref_range=var.dat$Tumour_ref_range, Tissue = c(rep("tumour", nrow(var.dat))) )
+summary(tumour.range.dat$Ref_range)
+cell.range.dat<-data.frame(site=var.dat$site, Ref_range=var.dat$Cell_ref_range, Tissue = c(rep("cell", nrow(var.dat))) )
+summary(cell.range.dat$Ref_range)
+ranges<-rbind(tumour.range.dat,cell.range.dat)
+tail(ranges)
+mean.tissue.range=data.frame(Tissue =c("cell", "tumour"), mean = c(mean(cell.range.dat$Ref_range), mean(tumour.range.dat$Ref_range)))
+mean.tissue.range # BTIC mean ref range = 0.2770912; Tumour mean ref range = 0.2128981
+## plot probewise reference range as density distribution
+ggplot(ranges, aes(Ref_range, fill = Tissue)) +
+  geom_density(alpha=0.5) +
+  scale_fill_manual(values=c("#99d594", "#fc8d59")) +
+  geom_vline(data=mean.tissue.range, aes(xintercept=mean), colour=c("#e9a3c9","#91bfdb"),
+             size=1, linetype="dashed") +
+  xlab("Reference Range") + theme_bw()
+
+
+## plot probewise reference range as violin plot
+ggplot(ranges, aes(Tissue, log(Ref_range), fill=Tissue)) +  geom_violin() +  scale_fill_manual(values=c("#99d594", "#fc8d59")) +  geom_boxplot(width=0.1, outlier.shape = NA) + ylab("Log of DNAm Reference Range") + theme_bw() + geom_signif(comparisons = list(c("tumour", "cell")), map_signif_level=TRUE)
+
+# test significance of difference between matched BTICs and tumours
+wilcox.test(tumour.range.dat$Ref_range, cell.range.dat$Ref_range, paired = TRUE) # p-value < 2.2e-16 (Wilcoxon signed-rank test) 
+
+### Fligner-Killeen test to assess variablity difference between BTICs and tumours at each CpG probe
+mvals.cancer<-exprs(cancer.dat.cor) # run on mvals as per script on Github from Lisa
+pdat<-pData(cancer.dat.cor)
+pvals <- sapply(1:nrow(mvals.cancer), function(x) {
+  z <- bartlett.test(mvals.cancer[x,] ~ pdat$Sample_Group)
+  z$p.value})
+
+fligner_cancer_results <- data.frame(CpG = rownames(mvals.cancer), pvalue = pvals)
+fligner_cancer_results$adj.pval <- p.adjust(pvals, method = "BH")
+
+load("Cancer.dat_Fligner_Killeen_Ref_Range.RData")
+
+# combine reference range dat with fligner-killeen output
+identical(fligner_cancer_results$CpG, tumour.range.dat$site) # TRUE
+identical(fligner_cancer_results$CpG, cell.range.dat$site) # TRUE
+fligner_cancer_results$Tumour_Ref_Range<-tumour.range.dat$Ref_range
+fligner_cancer_results$BTIC_Ref_Range<-cell.range.dat$Ref_range
+fligner_cancer_results$More_variable<-ifelse(fligner_cancer_results$Tumour_Ref_Range>fligner_cancer_results$BTIC_Ref_Range,"Tumour", "BTIC") # conditional statement to determine which tissue has higher reference range value for each CpG
+table(fligner_cancer_results$More_variable) # 264633 higher variable probes in BTIC; 155562 higher variable probes in Tumour
+
+# subset down to only CpGs which have signficant difference in variability between tumours and BTICs
+dim(fligner_cancer_results_sig<-fligner_cancer_results[which(fligner_cancer_results$adj.pval<=0.05),]) # 131307 sites  
+table(fligner_cancer_results_sig$More_variable) # 111825  probes with significantly higher variability in BTIC; 19482 probes with significantly higher variability in Tumour
+
+## assess genomic enrichment for 131307 significant differentially variable sites
+#load in the annotations (for Genes and CGIs)
+load("Gene_CpG_Relations_updatejune2015.RData") 
+head(Gene_CpG_Relations_update)
+load("Price_annotation.RData") #annotations based on Price et al. 2013 Epigenetics & Chromatin
+head(annotation)
+annotation$CpG<-rownames(annotation)
+
+#pull in the big function in the other script
+source("Gene_enrichment_fold_change_permutation_pvalue_function.R")
+
+
+# use 131307 significant differentially variable sites
+length(sig.differentially.variable.sites<-as.character(fligner_cancer_results_sig$CpG)) # 131307 significant differentially variable sites
+background.CpGs<-rownames(exprs(cancer.dat.cor)) #420195 background CpGs
+
+
+## plot fold enrichment and the permutation pvalues
+#take the hit list, the background, and the number of permutations
+CGI_Gene_permutation_enrichment(sig.differentially.variable.sites,background.CpGs, 1000, -4,2.5)
+
+# extract 6 topranking differentially variable probes
+variable.sites.ordered<-fligner_cancer_results_sig[order(fligner_cancer_results_sig$BTIC_Ref_Range),]
+var.sites.plot<-as.character(tail(variable.sites.ordered$CpG))
+cancer.dat.ordered<-cancer.dat.cor[,order(cancer.dat.cor$Patient_ID)]
+tumour.dat<-cancer.dat.ordered[,which(cancer.dat.ordered$Tissue=="tumour")]
+cell.dat<-cancer.dat.ordered[,which(cancer.dat.ordered$Tissue=="cell")]
+identical(tumour.dat$Patient_ID, cell.dat$Patient_ID) # TRUE
+head(tumour.var.betas<-melt(t(as.data.frame(betas(tumour.dat)[var.sites.plot,]))))
+colnames(tumour.var.betas)<-c("Sample", "CpG", "Beta")
+tumour.var.betas$Tissue<-"Tumour"
+head(cell.var.betas<-melt(t(as.data.frame(betas(cell.dat)[var.sites.plot,]))))
+colnames(tumour.var.betas)<-c("Sample", "CpG", "Beta")
+tumour.var.betas$Tissue<-"Tumour"
+head(cell.var.betas<-melt(t(as.data.frame(betas(cell.dat)[var.sites.plot,]))))
+colnames(cell.var.betas)<-c("Sample", "CpG", "Beta")
+cell.var.betas$Tissue<-"BTIC"
+identical(colnames(tumour.var.betas), colnames(cell.var.betas)) # TRUE
+var.plot.dat<-rbind(tumour.var.betas, cell.var.betas)
+var.plot.dat$Tissue<-as.factor(var.plot.dat$Tissue)
+ggplot(var.plot.dat, aes(x = Tissue, y = Beta)) + geom_boxplot(aes(fill = Tissue)) + scale_fill_manual(values=c("#fc8d59", "#99d594")) + geom_point(shape = 21, fill = "#bdbdbd", size = 2, position = position_jitter(width=0.075)) + theme_bw() + ylab("DNAm (beta)") + facet_wrap(~CpG, ncol = 3)
+
+# calculate average difference in reference range at these top-ranking 6 sites
+(top.6.var.df<-variable.sites.ordered[which(variable.sites.ordered$CpG%in%var.sites.plot),])
+top.6.var.df$Delta_Ref_Range<-top.6.var.df$BTIC_Ref_Range-top.6.var.df$Tumour_Ref_Range
+top.6.var.df$Delta_Ref_Range
+# save(fligner_cancer_results, file="Cancer.dat_Fligner_Killeen_Ref_Range.RData")
+```
+
+
+### Site-specific correlation between matched BTICs and tumours
+
+We will assess probewise correlation between the matched BTICs and tumours. The purpose of this is to identify potential "informative" sites in which BTIC DNAm may be indicative of tumour DNAm. 
+
+```{r echo = FALSE}
+# Calculate correlation between matched pairs for each CpG 
+
+## generate two datasets: one of BTICs and the other of tumours with sample ordered identically in the two datasets
+# subset out matched BTICs
+BTIC.samples <- grep("cell", cancer.dat.cor$Tissue)
+BTICs.cancer.dat<-cancer.dat.cor[,BTIC.samples]
+BTICs.cancer.dat.or<-BTICs.cancer.dat[,order(BTICs.cancer.dat$Patient_ID)]
+
+
+# subset out matched GBMs
+tumour.samples<- grep("tumour", cancer.dat.cor$Tissue)
+tumours.cancer.dat<-cancer.dat.cor[,tumour.samples]
+tumours.cancer.dat.or<-tumours.cancer.dat[,order(tumours.cancer.dat$Patient_ID)]
+sampleNames(tumours.cancer.dat.or)
+
+# check if patient order number is identical in both datasets
+identical(BTICs.cancer.dat.or$Patient_ID, tumours.cancer.dat.or$Patient_ID) # TRUE
+
+
+head(BTIC.betas<-betas(BTICs.cancer.dat.or))
+head(tumours.betas<-betas(tumours.cancer.dat.or))
+identical(rownames(BTIC.betas), rownames(tumours.betas)) # TRUE
+
+# define a function to perform Spearman rank correlations for each probe between the two datasets
+correlate.CpGs<-function(a, b){
+  correlation.output<-lapply(1:nrow(a), function(cpg){
+    cor.stuff<-cor.test(a[cpg,], b[cpg,], method="spearman", exact=FALSE)
+    data.frame(site=rownames(a)[cpg],rho=cor.stuff$estimate[[1]], pval=cor.stuff$p.value)
+  })
+  do.call(rbind, correlation.output)
+}
+
+cancer.corr<-correlate.CpGs(BTIC.betas, tumours.betas) # this takes a long time
+adj.p.values<-p.adjust(cancer.corr$pval, method= "BH")
+cancer.corr$adj.pval<-adj.p.values
+
+ggplot(cancer.corr, aes(x = rho)) + geom_density() + theme_bw() # plot distribution of Spearman rho values
+ggplot(cancer.corr, aes(x = pval)) + geom_density() + theme_bw() # plot distribution of Spearman p-values
+
+# save(cancer.corr, file = "Cancer.dat_Correlations.RData")
+
+## plot distribution of Spearman rho values at different thresholds of reference range (from tumours); adapted from code kindly provided by Rachel as published in Edgar et al. 2017 Translational Psychiatry (code source: https://github.com/redgar598/BECon/blob/master/BECon_Manuscript_Analysis/Correlated_CpGs.Rmd)
+load("Cancer.dat_Correlations.RData")
+load("Cancer.dat_Variability_Ref_Range.RData")
+identical(as.character(var.dat$site), as.character(cancer.corr$site)) # TRUE
+var.cor.dat<-data.frame(site = as.character(var.dat$site), Rho = cancer.corr$rho, Tumour_ref_range = var.dat$Tumour_ref_range)
+
+Cutoffs<-c(0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)
+
+DensityPLot_cancer<-lapply(Cutoffs, function(x) {
+  varible<-var.cor.dat[which(var.cor.dat$Tumour_ref_range>x),]
+  varible$CV_cutoff<-x
+  varible})
+N_cancer<-sapply(1:length(Cutoffs), function(x) nrow(DensityPLot_cancer[[x]]))
+N_cancer # 420195 288152 236987 184754 139405  88512  43543
+DensityPLot_melt_cancer<-lapply(1:length(Cutoffs), function(x) melt(DensityPLot_cancer[[x]],id=c("site","Tumour_ref_range", "CV_cutoff")))
+DensityPLot_plot_cancer<-do.call(rbind, DensityPLot_melt_cancer)
+# plot Spearman rho distribution at various reference range thresholds
+ggplot(DensityPLot_plot_cancer, aes(value, color=as.factor(CV_cutoff)))+geom_density()+
+  theme_bw()+scale_color_manual(values=c("#C2C2DF", "#ADABD2", "#9794C5", "#827FBB", "#7262AC", "#603E9A", "#4A1486"), name="Reference Range Threshold")+
+  xlab("Spearman Correlation Rho")+ylab("Density")
+
+# assess how many significantly sites underlie correlation and variability thresholds for positively correlated sites
+
+cancer.var.cor.dat<-data.frame(site = as.character(var.dat$site), Rho = cancer.corr$rho, Adj.pval = cancer.corr$adj.pval, Tumour_ref_range = var.dat$Tumour_ref_range)
+dim(cancer.var.cor.dat.sig<-cancer.var.cor.dat[which(cancer.var.cor.dat$Adj.pval<= 0.05),]) # 30,004 significantly correlated sites
+
+ggplot(cancer.var.cor.dat.sig, aes(x = Rho)) + geom_density()
+dim(positive.cor.dat<-cancer.var.cor.dat.sig[which(cancer.var.cor.dat.sig$Rho>0),])
+summary(positive.cor.dat$Rho)
+
+dim(negative.cor.dat<-cancer.var.cor.dat.sig[which(cancer.var.cor.dat.sig$Rho<0),])
+summary(negative.cor.dat$Rho)
+
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.05) # 29103 
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.1) # 28122
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.2) # 26025
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.3) # 22714
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.4) # 17047
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.5) # 10251
+
+count(cancer.var.cor.dat.sig$Rho>=0.3) # 29875
+count(cancer.var.cor.dat.sig$Rho>=0.6) # 9678
+count(cancer.var.cor.dat.sig$Rho>=0.9) # 19
+
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.05 & cancer.var.cor.dat.sig$Rho>=0.3) # 29059
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.05 & cancer.var.cor.dat.sig$Rho>=0.6) # 9580
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.05 & cancer.var.cor.dat.sig$Rho>=0.9) # 19
+
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.1 & cancer.var.cor.dat.sig$Rho>=0.3) # 28099
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.1 & cancer.var.cor.dat.sig$Rho>=0.6) # 9429
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.1 & cancer.var.cor.dat.sig$Rho>=0.9) # 19
+
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.2 & cancer.var.cor.dat.sig$Rho>=0.3) # 26010
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.2 & cancer.var.cor.dat.sig$Rho>=0.6) # 9005
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.2 & cancer.var.cor.dat.sig$Rho>=0.9) # 19
+
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.3 & cancer.var.cor.dat.sig$Rho>=0.3) # 22702
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.3 & cancer.var.cor.dat.sig$Rho>=0.6) # 8229
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.3 & cancer.var.cor.dat.sig$Rho>=0.9) # 19
+
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.4 & cancer.var.cor.dat.sig$Rho>=0.3) # 17040
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.4 & cancer.var.cor.dat.sig$Rho>=0.6) # 6644
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.4 & cancer.var.cor.dat.sig$Rho>=0.9) # 16
+
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.5 & cancer.var.cor.dat.sig$Rho>=0.3) # 10249
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.5 & cancer.var.cor.dat.sig$Rho>=0.6) # 4342
+count(cancer.var.cor.dat.sig$Tumour_ref_range>=0.5 & cancer.var.cor.dat.sig$Rho>=0.9) # 15
+
+# assess how many significant sites underlie correlation and variability thresholds for negatively correlated sites
+dim(anti.cor.dat<-cancer.var.cor.dat.sig[which(cancer.var.cor.dat.sig$Rho<0),]) # 129
+
+count(anti.cor.dat$Tumour_ref_range>=0.05) # 44 
+count(anti.cor.dat$Tumour_ref_range>=0.1) # 23
+count(anti.cor.dat$Tumour_ref_range>=0.2) # 15
+count(anti.cor.dat$Tumour_ref_range>=0.3) # 12
+count(anti.cor.dat$Tumour_ref_range>=0.4) # 7
+count(anti.cor.dat$Tumour_ref_range>=0.5) # 2
+
+count(anti.cor.dat$Rho<=-0.3) # 129
+count(anti.cor.dat$Rho<=-0.6) # 7
+count(anti.cor.dat$Rho<=-0.9) # 0
+
+count(anti.cor.dat$Tumour_ref_range>=0.05 & anti.cor.dat$Rho<=-0.3) # 44
+count(anti.cor.dat$Tumour_ref_range>=0.05 & anti.cor.dat$Rho<=-0.6) # 4
+count(anti.cor.dat$Tumour_ref_range>=0.05 & anti.cor.dat$Rho<=-0.9) # 0
+
+count(anti.cor.dat$Tumour_ref_range>=0.1 & anti.cor.dat$Rho<=-0.3) # 23
+count(anti.cor.dat$Tumour_ref_range>=0.1 & anti.cor.dat$Rho<=-0.6) # 2
+count(anti.cor.dat$Tumour_ref_range>=0.1 & anti.cor.dat$Rho<=-0.9) # 0
+
+count(anti.cor.dat$Tumour_ref_range>=0.2 & anti.cor.dat$Rho<=-0.3) # 15
+count(anti.cor.dat$Tumour_ref_range>=0.2 & anti.cor.dat$Rho<=-0.6) # 1
+count(anti.cor.dat$Tumour_ref_range>=0.2 & anti.cor.dat$Rho<=-0.9) # 0
+
+count(anti.cor.dat$Tumour_ref_range>=0.3 & anti.cor.dat$Rho<=-0.3) # 12
+count(anti.cor.dat$Tumour_ref_range>=0.3 & anti.cor.dat$Rho<=-0.6) # 1
+count(anti.cor.dat$Tumour_ref_range>=0.3 & anti.cor.dat$Rho<=-0.9) # 0
+
+count(anti.cor.dat$Tumour_ref_range>=0.4 & anti.cor.dat$Rho<=-0.3) # 7
+count(anti.cor.dat$Tumour_ref_range>=0.4 & anti.cor.dat$Rho<=-0.6) # 1
+count(anti.cor.dat$Tumour_ref_range>=0.4 & anti.cor.dat$Rho<=-0.9) # 0
+
+count(anti.cor.dat$Tumour_ref_range>=0.5 & anti.cor.dat$Rho<=-0.3) # 2
+count(anti.cor.dat$Tumour_ref_range>=0.5 & anti.cor.dat$Rho<=-0.6) # 0
+count(anti.cor.dat$Tumour_ref_range>=0.5 & anti.cor.dat$Rho<=-0.9) # 0
+
+### Tried to use fit a beta mixture model to define correlation threshold for informative site identification (as per Edgar et al. 2017 Translational Psychiatry) but found that sample size was underpowered to detect bimodel distribution (got nonconvergent warnings). 
+# fit beta mixture model to define correlation threshold (2 sub populations); at each covariance cutoff
+# mixMod<-lapply(1:length(DensityPLot_cancer), function(cv) normalmixEM(DensityPLot_cancer[[cv]]$Rho,k=2, maxit=500))  # takes awhile 
+# 
+# 
+# cv<-7 #strictest variance 0.5
+# pos_cor_pop<-which(mixMod[[cv]]$mu==max(mixMod[[cv]]$mu))
+# plot(mixMod[[cv]],which=2,xlab2="Correlation")
+# lines(density(DensityPLot_cancer[[cv]]), lty=2, lwd=3)
+#     abline(v= mixMod[[cv]]$mu[pos_cor_pop]-(2*mixMod[[cv]]$sigma[pos_cor_pop]), col="blue", lwd=3)
+
+## Will identify informative sites based on thresholds used in Edgar et al. 2017 Translational Psychiatry to define blood-brain (BA10) informative sites: Reference Range >= 0.1 and Spearman Rho >= 0.4
+# dim(inform.sites.df<-var.cor.dat[which(var.cor.dat$Tumour_ref_range>=0.1 & abs(var.cor.dat$Rho)>=0.4),]) #49,469 probes variable at tumour ref range >= 0.1
+# 
+# informative.sites<-as.character(inform.sites.df$site)
+# 
+# inform.sites.df.ordered<-inform.sites.df[order(inform.sites.df$Rho),]
+# top.inform.sites<-as.character(inform.sites.df.ordered[49464:49469,]$site)
+
+# extract  topranking correlated sites and plot their DNAm as a scatterplot of BTIC beta vs Tumour beta
+
+top.corr.sites.df<-cancer.var.cor.dat.sig[which(cancer.var.cor.dat.sig$Tumour_ref_range>=0.5 & cancer.var.cor.dat.sig$Rho>=0.9),]
+top.corr.sites<-as.character(top.corr.sites.df$site)
+
+
+cancer.dat.ordered<-cancer.dat.cor[,order(cancer.dat.cor$Patient_ID)]
+tumour.dat<-cancer.dat.ordered[,which(cancer.dat.ordered$Tissue=="tumour")]
+cell.dat<-cancer.dat.ordered[,which(cancer.dat.ordered$Tissue=="cell")]
+identical(tumour.dat$Patient_ID, cell.dat$Patient_ID) # TRUE
+head(tumour.corr.betas<-melt(t(as.data.frame(betas(tumour.dat)[top.corr.sites,]))))
+colnames(tumour.corr.betas)<-c("Sample", "CpG", "Tumour_beta")
+head(cell.corr.betas<-melt(t(as.data.frame(betas(cell.dat)[top.corr.sites,]))))
+colnames(cell.corr.betas)<-c("Sample", "CpG", "BTIC_beta")
+identical(tumour.corr.betas$CpG, cell.corr.betas$CpG) # TRUE
+corr.plot<-data.frame(CpG = as.factor(tumour.corr.betas$CpG), Tumour_Beta= tumour.corr.betas$Tumour_beta, BTIC_Beta = cell.corr.betas$BTIC_beta)
+
+cor<-top.corr.sites.df[,c("site", "Rho")]
+cor.or<-cor[order(cor$site),]
+cor.or$Rho<-round(cor.or$Rho, 2)
+colnames(cor.or)<-c("CpG", "Rho")
+ggplot(corr.plot, aes(x = Tumour_Beta, y = BTIC_Beta)) + 
+  geom_smooth(method = "lm", se = FALSE, colour = "#bdbdbd") +
+  geom_point(shape = 21, fill = "#2b8cbe", size =2) + 
+  facet_wrap(~CpG, ncol = 5) +
+  xlab("Tumour DNAm (beta)") + 
+  ylab("BTIC DNAm (beta)") +
+  theme_bw() +
+  geom_text(data=cor.or,aes(x = 0.70, y = 0.15, label=paste("r =",Rho)))+
+  ylim(0,1)
+
+### assess how many significantly correlated sites overlap with mQTL CpGs identified in brain tissues by Gibbs et al 2014 PLoS Genetics
+
+head(brain_mqtls.df<-read.table("Gibbs_mQTLs.txt", header = TRUE))
+length(brain_mqtl_cpgs<-as.character(unique(brain_mqtls.df$IlmnID))) # 3619 unique CpGs
+dim(sig.cor.mqtl<-cancer.var.cor.dat.sig[which(cancer.var.cor.dat.sig$site%in%brain_mqtl_cpgs),]) # 288 sites overlap (~1% of 30,004 significantly correlated sites)
+
+# plot reference range distribution of 288 genetically-influenced sites over the remaining signifcantly correlated sites
+cm.dat<-cancer.var.cor.dat.sig
+cm.dat$mQTL_associated<-"NO"
+cm.dat$mQTL_associated[which(cm.dat$site%in%sig.cor.mqtl$site)]<-"YES"
+table(cm.dat$mQTL_associated)
+cm.dat$mQTL_associated<-as.factor(cm.dat$mQTL_associated)
+ggplot(cm.dat, aes(x = Tumour_ref_range, fill = mQTL_associated)) + geom_density(alpha = 0.55) + scale_fill_manual(values = c( "seagreen3", "plum")) + theme_bw() + xlab("Reference Range")
+
+ggplot(cm.dat, aes(y = Tumour_ref_range, x = mQTL_associated)) + geom_boxplot(aes(fill = mQTL_associated), outlier.color = "NA") + scale_fill_manual(values = c( "seagreen3", "plum"))  + theme_bw() + xlab("mQTL-associated CpG") + ylab("Tumour Reference Range")
+
+wilcox.test(cm.dat$Tumour_ref_range[which(cm.dat$mQTL_associated=="YES")], cm.dat$Tumour_ref_range[which(cm.dat$mQTL_associated=="NO")], paired = FALSE)
+
+# permutation testing for brain mQTL-associated CpGs and significantly correlated sites between BTICs and tumours
+length(brain_mqtl_cpgs) # 3619 unique CpGs associated with significant brain mQTLs from Gibbs et al. 2010 PLoS Genetics
+length(cancer.cor.sig.sites<-as.character(cancer.var.cor.dat.sig$site)) # 30,004 significantly correlated sites between BTICs and tumours
+length(cancer.dat.450K.probes<-as.character(cancer.fDat$ILMNID)) # 420195 possible CpGs
+
+
+# permutation function
+Permutate_overlap<-function(probe_list1, probe_list2, all_sites){ 
+  len1<-length(probe_list1) 
+  len2<-length(probe_list2) 
+  rnd1<-all_sites[sample(1:length(all_sites), len1)] 
+  rnd2<-all_sites[sample(1:length(all_sites), len2)] 
+  length(intersect(rnd1, rnd2)) } 
+
+# run permutations
+expected_overlap<-sapply(1:10000, function(seed){  
+  set.seed(seed) 
+  Permutate_overlap(brain_mqtl_cpgs, cancer.cor.sig.sites, cancer.dat.450K.probes) 
+  }) 
+
+mean(expected_overlap) 
+sd(expected_overlap)
+
+
+# compute p-value from permutation testing
+real_overlap<-length(intersect(brain_mqtl_cpgs, cancer.cor.sig.sites))
+p.cancer=(length(which(expected_overlap>=real_overlap)+1))/(length(expected_overlap)+1) 
+p.cancer # p = 0.033 # Based on 10^4 trials of Monte Carlo simulations, p = 0.033 for the likelihood of the observed proportion of site-specific hits overlapping with DMR CpGs 
+
+expected_overlap<-as.data.frame(expected_overlap)
+
+ggplot(data = expected_overlap, aes(expected_overlap)) +  geom_histogram(bins = 40) +  geom_vline(xintercept = real_overlap, colour="red", linetype = "longdash") +  labs(x = "Number of Overlaps") +  theme_bw(base_size = 18)
+
+```
+
+### Assess overlap between different categories of identified CpGs
+
+We will look at the overlap between a) CpGs underlying DMRs, b) CpGs which are differentially variable and c) informative CpGs in which DNAm of BTICs and GBM tumours are correlated
+
+```{r}
+# length(cancer.dmrs.cpgs) # 4968 CpGs underlying significant DMRs
+# length(variable.CpGs<-as.character(fligner_cancer_results_sig$CpG)) # 131307 differentially variable CpGs
+# length(correlated.CpGs<-as.character(cancer.var.cor.dat.sig$site)) # 30004
+
+load("Cancer.dmrs.cpgs.RData") # 4968 CpGs underlying significant DMRs
+load("Variable.CpGs.RData") # 131307 differentially variable CpGs
+load("Correlated.sites.RData") # 30,004 significantly correlated CpGs
+
+# save(cancer.dmrs.cpgs, file="Cancer.dmrs.cpgs.RData")
+# save(variable.CpGs, file="Variable.CpGs.RData")
+# save(correlated.CpGs, file="Correlated.sites.RData")
+
+# check overlap of hits from both cohorts
+library(VennDiagram)
+v.all<-venn.diagram(x = list(cancer.dmrs.cpgs , variable.CpGs , correlated.CpGs),filename=NULL, category.names = c("DMR CpGs", "Variable CpGs", "Informative CpGs"), fill = c("#f1a340", "#998ec3", "#a1d76a"))
+grid.newpage()
+grid.draw(v.all)
+
+```
+
+### Assessment of MGMT DNA methylation status across tumour samples and BTIC samples 
+
+An additional point of interest is the DNA methylation status of the DNA repair gene, gene O6-methylguanine-DNA methyltransferase (MGMT). Promoter methylation of MGMT  is a predictive factor for benefit from alkylating agent therapy (ie temozolomide) in glioblastoma patients ( Esteller et al 1999 Can Res, Esteller et al. 2000 NEJM, Hegi et al. 2005 NEJM, Hegi et al. 2004 Clin Cancer Res). Here we will assess MGMT DNA methylation, focusing on the promoter region (CHR10: 131264700-131266300), across BTICs and matched GBM tumours. This was previously done using the 450K array probes as per Bady et al 2012 Acta Neuropathol---we will be assessing the same 450K probes. 
+
+```{r echo = FALSE}
+cancer.fDat<-fData(cancer.dat.cor)
+dim(cancer.dat.cor)
+
+## extract 450K probes in which MGMT is listed for the UCSC RefSeq Name column in annotation
+dim(UCSC_RefSeq_MGMT_dat<-cancer.fDat[which(cancer.fDat$UCSC_REFGENE_NAME=="MGMT"),]) # 151 probes
+
+
+# According to Bady et al. 2012 Acta Neuropathol, the MGMT promoter region encompasses CHR10: 131264700-131266300 containing 18 probes which this study closely examined. We will specifically extract the probes underlying this promoter region
+extract_region_probes<-function(dmr.chr, dmr.start.coord, dmr.end.coord){
+inrange<-cancer.fDat[which(cancer.fDat$CHR==as.character(dmr.chr) & cancer.fDat$MAPINFO>=dmr.start.coord & cancer.fDat$MAPINFO<=dmr.end.coord),]
+return(inrange)
+}
+promoter_MGMT_probes<-extract_region_probes(10, 131264700,131266300) # 17 probes 
+length(intersect(UCSC_RefSeq_MGMT_dat$TargetID, promoter_MGMT_probes$TargetID)) # 16 probes; only cg02802904 missing (will include that)
+
+# Subset cancer.dat.cor 450K methylumi object down to MGMT annotated probes
+length(MGMT_target_probes<-c(as.character(UCSC_RefSeq_MGMT_dat$TargetID), "cg02802904")) #152 probes
+dim(MGMT_cancer_dat<-cancer.dat.cor[MGMT_target_probes,]) # 152 probes, 70 samples
+MGMT_betas_cancer<-betas(MGMT_cancer_dat)
+MGMT_betas_cancer_ordered <- MGMT_betas_cancer[order(fData(MGMT_cancer_dat)$CHR, fData(MGMT_cancer_dat)$MAPINFO),]
+matDat <- scale(t(MGMT_betas_cancer_ordered))
+identical(rownames(matDat), rownames(pData(MGMT_cancer_dat))) # TRUE
+# write.csv(MGMT_betas_cancer_ordered, "MGMT_450K_probes_ordered_Tumour_BTIC.csv")
+
+# use a heatmap to look examine 152 probes across promoter region and MGMT gene body
+head(pData(MGMT_cancer_dat))
+tissueCol <- as.numeric(factor(MGMT_cancer_dat$Tissue))
+tissueCol <- gsub("1", "#fc8d59",  gsub("2", "#99d594", tissueCol))
+BuPu <- colorRampPalette(brewer.pal(10,"RdYlBu")[1:10])(30)
+
+heatmap.2(matDat,dendrogram="row", symm=FALSE, Rowv=TRUE, Colv=FALSE, trace = "none", col = BuPu,  RowSideColors = tissueCol, cexCol = 0.8, margins=c(9,9))
+legend("top", legend = c("Cell", "Tumour"),fill = c("#fc8d59","#99d594"), horiz = T)
+
+# plot a heatmap of 17 MGMT promoter CpGs (as described by Bady et al 2012 Acta Neuropathol)
+prom_matDat<-matDat[,which(colnames(matDat)%in%promoter_MGMT_probes$TargetID)]
+
+heatmap.2(prom_matDat,dendrogram="row", symm=FALSE, Rowv=TRUE, Colv=FALSE, trace = "none", col = BuPu,  RowSideColors = tissueCol, cexCol = 0.8, margins=c(9,9))
+legend("top", legend = c("Cell", "Tumour"),fill = c("#fc8d59","#99d594"), horiz = T)
+
+promoter_probes_mapinfo<-cancer.fDat[which(cancer.fDat$TargetID%in%colnames(prom_matDat)),c("TargetID","MAPINFO")]
+promoter_probes_mapinfo_ordered <-promoter_probes_mapinfo[order(promoter_probes_mapinfo$MAPINFO),] # chr10:131,264,786-131,265,769
+
+# promoter_MGMT_cancer.dat<-t(prom_matDat)
+# write.csv(promoter_MGMT_cancer.dat, file = "Cancer.dat_Promoter_MGMT_Probes.csv")
+
+# plot as MGMT promoter region DMR
+
+plot_DMR<-function(methylumi.object, Sample.Group, dmr.chr, dmr.start.coord, dmr.end.coord){
+  annotation<-fData(methylumi.object)
+inrange<-annotation[which(annotation$CHR==as.character(dmr.chr) & annotation$MAPINFO>=dmr.start.coord-100 & annotation$MAPINFO<=dmr.end.coord+100),c("TargetID","MAPINFO","CHR")]
+betas.matrix<-betas(methylumi.object)
+CpG_betas<- t(betas.matrix[rownames(inrange),])
+plot_dat <- data.frame(CpG.Betas = CpG_betas, Group = Sample.Group)
+plot_dat <- data.frame(plot_dat[,order(colnames(plot_dat))])
+test <- melt(plot_dat, id.vars = c("Group"))
+mapinfodat <- data.frame(CpG = rep(rownames(inrange), ncol(betas.matrix)), MAPINFO =
+rep(inrange$MAPINFO, ncol(betas.matrix)))
+test1 <- mapinfodat[order(mapinfodat$CpG),]
+plot_dat <- cbind(test,test1$MAPINFO)
+colnames(plot_dat)<-c("Group", "variable", "value", "Coordinate")
+plot_dat$Group <- as.factor(plot_dat$Group)
+stat_sum_single <- function(fun, geom="point", ...) {
+  stat_summary(fun.y=fun, geom=geom, size = 2,...)
+}
+ggplot(plot_dat, aes(x = Coordinate , y = value, fill = Group,colour =
+Group, group = Group)) +
+  geom_point(size =3, pch=21, color = "black") +
+  stat_sum_single(mean, geom="line") +
+  scale_fill_manual(values=c("#fc8d59","#99d594"))+
+  scale_color_manual(values=c("#fc8d59","#99d594"))+
+  theme(axis.text=element_text(colour="black", size = 10),
+        axis.title=element_text(face = "bold", colour="black", size = 10),
+title=element_text(face = "bold", colour="black", size = 16),
+legend.key.size = unit(1, "cm"), legend.title = element_text(size
+= 10),
+        legend.text = element_text(size = 10)) +
+  xlab("Genomic Coordinate")+
+  ylab("DNAm (Beta Value)") + 
+  theme_bw()
+}
+# plot MGMT promoter region (chr10:131264786-131265769)
+plot_DMR(cancer.dat.cor, cancer.dat.cor$Tissue, 10, 131264786, 131265769)
+
+start <- 131264786
+end <- 131265769
+chr <- 10
+fdat<-fData(cancer.dat.cor)
+cpgdat <- subset(fdat, MAPINFO >=start & MAPINFO <=end & CHR == chr)
+delbeta.dmr<-mean(del.betas.df[rownames(cpgdat),"Delbetas"]) # Delta beta =  -0.1568
+
+
+## load MGMT RNA-Seq data provided by Yaoqing Shen from Dr. Steve Jones' group at the GSC
+MGMT_gene_exp_dat<-read.csv("Cancer.dat_MGMT_RPKM_from_Yaoqing_Sept_2017.csv")
+length(intersect(sampleNames(cancer.dat.cor), MGMT_gene_exp_dat$Sample_ID)) # all 70 samples from cancer.dat.cor 450K object is contained in gene expression file
+
+# boxplot of MGMT gene expression differences between BTICs and GBM tumours
+ggplot(MGMT_gene_exp_dat, aes(x = Tissue, y = MGMT_RPKM)) + geom_boxplot(aes(fill = Tissue), outlier.colour = "NA") + geom_point(size = 2, fill = "gray", shape = 21, position = (position_jitter(0.1))) + scale_fill_manual(values=c("#fc8d59","#99d594")) + ylab("MGMT Gene Expression (RKPM)") + theme_bw() +  geom_signif(comparisons = list(c("tumour", "cell")), map_signif_level=TRUE)
+
+tumour.MGMT.expression.dat<-MGMT_gene_exp_dat[which(MGMT_gene_exp_dat$Tissue=="tumour"),]
+cell.MGMT.expression.dat<-MGMT_gene_exp_dat[which(MGMT_gene_exp_dat$Tissue=="cell"),]
+wilcox.test(tumour.MGMT.expression.dat$MGMT_RPKM, cell.MGMT.expression.dat$MGMT_RPKM, paired = TRUE) # 2.83e-7
+gene.expression.paired.differences<-tumour.MGMT.expression.dat$MGMT_RPKM-cell.MGMT.expression.dat$MGMT_RPKM
+mean(gene.expression.paired.differences, na.rm = T)
+
+
+# correlate MGMT gene expression and probewise MGMT promoter DNAm in BTICs and tumours separately
+
+## define function to correlate data types and produce output
+correlate.omics<-function(a,b){
+  correlation.output<-lapply(1:ncol(a), function(cpg){
+    cor.stuff<-cor.test(a[,cpg], b$MGMT_RPKM, method="spearman", exact=FALSE)
+    data.frame(site=colnames(a)[cpg],rho=cor.stuff$estimate[[1]], pval=cor.stuff$p.value)
+  })
+  do.call(rbind, correlation.output)
+}
+
+## match sample name order in gene expression and MGMT promoter DNAm data for BTICs
+BTIC.mgmt.ge<-MGMT_gene_exp_dat[which(MGMT_gene_exp_dat$Tissue=="cell"),]
+BTIC.mgmt.promDNAm<-prom_matDat[rownames(prom_matDat)%in%BTIC.mgmt.ge$Sample_ID,]
+BTIC.mgmt.promDNAm.or<-BTIC.mgmt.promDNAm[match(BTIC.mgmt.ge$Sample_ID,rownames(BTIC.mgmt.promDNAm)),]
+identical(as.character(rownames(BTIC.mgmt.promDNAm.or)), as.character(BTIC.mgmt.ge$Sample_ID)) # TRUE
+BTIC.MGMT.correlation<-correlate.omics(BTIC.mgmt.promDNAm.or, BTIC.mgmt.ge) # perform correlation using defined function from above
+BTIC.MGMT.correlation$adj.pval<-p.adjust(BTIC.MGMT.correlation$pval, method="BH")
+BTIC.MGMT.correlation$Tissue<-"cell"
+dim(BTIC.sig.corr<-BTIC.MGMT.correlation[which(BTIC.MGMT.correlation$adj.pval<=0.05),]) # define number of significant correlations (9 CpGs show significant correlation with gene expression at FDR < 0.05)
+# append Mapinfo for each CpG site
+head(BTIC.MGMT.correlation.rev<-merge(BTIC.MGMT.correlation, cancer.fDat[,c("ILMNID","MAPINFO")], by.x = "site", by.y = "ILMNID"))
+BTIC.MGMT.correlation.rev.or<-BTIC.MGMT.correlation.rev[order(BTIC.MGMT.correlation.rev$MAPINFO),] # order by MAPINFO
+
+
+## match sample name order in gene expression and MGMT promoter DNAm data for Tumours
+Tumour.mgmt.ge<-MGMT_gene_exp_dat[which(MGMT_gene_exp_dat$Tissue=="tumour"),]
+Tumour.mgmt.promDNAm<-prom_matDat[rownames(prom_matDat)%in%Tumour.mgmt.ge$Sample_ID,]
+Tumour.mgmt.promDNAm.or<-Tumour.mgmt.promDNAm[match(Tumour.mgmt.ge$Sample_ID,rownames(Tumour.mgmt.promDNAm)),]
+identical(as.character(rownames(Tumour.mgmt.promDNAm.or)), as.character(Tumour.mgmt.ge$Sample_ID)) # TRUE
+Tumour.MGMT.correlation<-correlate.omics(Tumour.mgmt.promDNAm.or, Tumour.mgmt.ge) # perform correlation using defined function from above
+Tumour.MGMT.correlation$adj.pval<-p.adjust(Tumour.MGMT.correlation$pval, method="BH")
+Tumour.MGMT.correlation$Tissue<-"tumour"
+dim(Tumour.sig.corr<-Tumour.MGMT.correlation[which(Tumour.MGMT.correlation$adj.pval<=0.05),]) # define number of significant correlations (6 CpGs show significant correlation with gene expression at FDR < 0.05)
+# append Mapinfo for each CpG site
+head(Tumour.MGMT.correlation.rev<-merge(Tumour.MGMT.correlation, cancer.fDat[,c("ILMNID","MAPINFO")], by.x = "site", by.y = "ILMNID"))
+Tumour.MGMT.correlation.rev.or<-Tumour.MGMT.correlation.rev[order(Tumour.MGMT.correlation.rev$MAPINFO),] # order by MAPINFO
+
+## Find overlap of sig probewise correlations across BTICs and tumours
+intersect(BTIC.sig.corr$site, Tumour.sig.corr$site) # "cg14194875" "cg00618725" "cg12434587" "cg02802904" "cg12981137" are significantly correlated between both BTICs and Tumours at FDR < 0.05 (importantly, cg12434587 and cg12981137 were previously shown to have the strongest association with gene expression as per Bady et al. 2012 Acta Neuropathol)
+
+
+## combine BTIC and Tumour correlation data frames
+identical(colnames(Tumour.MGMT.correlation.rev.or), colnames(BTIC.MGMT.correlation.rev.or))
+dim(MGMT_corr_both_tissues<-rbind(BTIC.MGMT.correlation.rev.or, Tumour.MGMT.correlation.rev.or))
+MGMT_corr_both_tissues$Tissue<-as.factor(MGMT_corr_both_tissues$Tissue)
+dim(MGMT_corr_both_tissues)
+## plot correlation as a line plot across the probes
+ggplot(MGMT_corr_both_tissues, aes(x=site, y=rho, group=Tissue))+ geom_line(aes(color=Tissue),size = 1.5)+
+  geom_point(aes(color=Tissue))+ 
+  scale_color_manual(values=c("#fc8d59","#99d594")) + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylab("Correlation between RNA-Seq (RPKM) and DNAm (beta)")
+
+# ggplot(MGMT_corr_both_tissues, aes(x=MAPINFO, y=rho, group=Tissue))+ 
+#   geom_point(aes(fill=Tissue), size = 5, shape = 21)+ 
+#   scale_fill_manual(values=c("#fc8d59","#99d594")) + 
+#   theme_bw() +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+#   ylab("Correlation between RNA-Seq (RPKM) and DNAm (beta)")
+## check if these significant sites are contained in the informative sites identified above
+MGMT.promoter.sites<-as.character(colnames(prom_matDat)) # vector of 17 sites
+
+site_specific_hits<-topT.matched.pairs[which(topT.matched.pairs$adj.P.Val<=0.001 & abs(topT.matched.pairs$dB) >= 0.2),]
+intersect(MGMT.promoter.sites, rownames(site_specific_hits)) # "cg25946389" "cg00618725" "cg12434587" "cg12981137" overlapped 
+intersect(MGMT.promoter.sites, variable.CpGs) # "cg02330106" "cg16215402" "cg18026026" "cg05068430" "cg19706602" "cg02802904""cg12981137" "cg26201213" overlapped
+intersect(MGMT.promoter.sites, cancer.dmrs.cpgs) # no overlap
+inform.mgmt.sites<-intersect(MGMT.promoter.sites, informative.sites) #  "cg02022136" "cg23998405" "cg01341123" "cg25946389" "cg14194875" "cg00618725" "cg12434587" "cg16215402" "cg02802904" "cg12981137" "cg02941816" overlap
+
+
+# extract 6 topranking informative sites and plot their DNAm as a scatterplot of BTIC beta vs Tumour beta
+
+inform.mgmt.sites<-intersect(MGMT.promoter.sites, informative.sites) #  "cg02022136" "cg23998405" "cg01341123" "cg25946389" "cg14194875" "cg00618725" "cg12434587" "cg16215402" "cg02802904" "cg12981137" "cg02941816" overlap
+cancer.dat.ordered<-cancer.dat.cor[,order(cancer.dat.cor$Patient_ID)]
+tumour.dat<-cancer.dat.ordered[,which(cancer.dat.ordered$Tissue=="tumour")]
+cell.dat<-cancer.dat.ordered[,which(cancer.dat.ordered$Tissue=="cell")]
+identical(tumour.dat$Patient_ID, cell.dat$Patient_ID) # TRUE
+head(tumour.inform.betas<-melt(t(as.data.frame(betas(tumour.dat)[inform.mgmt.sites,]))))
+colnames(tumour.inform.betas)<-c("Sample", "CpG", "Tumour_beta")
+head(cell.inform.betas<-melt(t(as.data.frame(betas(cell.dat)[inform.mgmt.sites,]))))
+colnames(cell.inform.betas)<-c("Sample", "CpG", "BTIC_beta")
+identical(tumour.inform.betas$CpG, cell.inform.betas$CpG) # TRUE
+inform.plot<-data.frame(CpG = as.factor(tumour.inform.betas$CpG), Tumour_Beta= tumour.inform.betas$Tumour_beta, BTIC_Beta = cell.inform.betas$BTIC_beta)
+
+cor<-inform.sites.df.ordered[which(inform.sites.df.ordered$site%in%inform.mgmt.sites),c("site", "Rho")]
+cor.or<-cor[order(cor$site),]
+cor.or$Rho<-round(cor.or$Rho, 2)
+colnames(cor.or)<-c("CpG", "Rho")
+ggplot(inform.plot, aes(x = Tumour_Beta, y = BTIC_Beta)) + 
+  geom_smooth(method = "lm", se = FALSE, colour = "#bdbdbd") +
+  geom_point(shape = 21, fill = "#2b8cbe", size =2) + 
+  facet_wrap(~CpG, ncol = 3) +
+  xlab("Tumour DNAm (beta)") + 
+  ylab("BTIC DNAm (beta)") +
+  theme_bw() +
+  geom_text(data=cor.or,aes(x = 0.70, y = 0.15, label=paste("r =",Rho)))+
+  ylim(0,1)
+
+
+# ## Annotate these top 15 correlated sites to underlying genes
+# load("Annotation_simplified.Rdata")
+# head(annotation_genes_unique)
+# top.correlated.sites.genes<-merge(cor.or, annotation_genes_unique, by.x="CpG", by.y="CpG")
+```
+

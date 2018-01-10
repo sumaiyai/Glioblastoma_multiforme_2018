@@ -1,0 +1,278 @@
+BTIC_GBM Preprocessing Replicate Check 
+========================================================
+## Author: Sumaiya Islam
+## Date: January 24, 2017
+
+### A. Set up wd & packages
+
+We will initially set our working directory and load our libraries.
+```{r include = FALSE, echo=FALSE}
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library(wateRmelon)
+library("RColorBrewer")
+library(plyr)
+library(VennDiagram)
+library(ggplot2)
+library(qvalue)
+library("sva")
+library(parallel)
+library(gridExtra)
+library(grid)
+library("reshape2")
+library(quantro)
+library(doParallel)
+library(RPMM)
+```
+
+
+### B. Load files
+
+```{r echo=FALSE}
+# save(BTIC_GBM, file = "BTIC_GBM.all.raw.RData")
+# save(BTIC_GBM.2, file = "BTIC_GBM.all.raw.2.RData")
+
+# load original methylumi objects created
+load("BTIC_GBM.all.raw.RData")
+load("BTIC_GBM.all.raw.2.RData")
+
+BTIC_GBM # probes = 485,577, n = 128
+BTIC_GBM.2 # probes = 485,577, n = 128
+```
+
+### C. Subset down to just replicate samples and restructure meta data
+
+```{r echo = FALSE}
+
+replicate.samples<-c("94_cell", "100_cell", "100_cell_rep", "67_cell", "67_cell_rep", "147_cell", "147_cell_rep", "12_cell", "12_cell_rep", "73_cell", "73_cell_rep", "119_cell", "106_cell")
+dim(BTIC_GBM_rep<-BTIC_GBM[,sampleNames(BTIC_GBM)%in%replicate.samples])
+```
+
+Re-structure meta data in revised methylumi objects
+
+```{r, echo=FALSE}
+# re-code "cell_r"" entries in Sample_Group as just "cell"
+pData(BTIC_GBM_rep)$Sample_Group<-as.character(pData(BTIC_GBM_rep)$Sample_Group)
+Sample_Group<-pData(BTIC_GBM_rep)$Sample_Group
+Sample_Group[which(Sample_Group=="cell_r")]<-"cell"
+pData(BTIC_GBM_rep)$Sample_Group<- Sample_Group
+pData(BTIC_GBM_rep)$Sample_Group<-as.factor(pData(BTIC_GBM_rep)$Sample_Group)
+
+# re-code sex as factor
+sex<-pData(BTIC_GBM_rep)$Sex
+sex[which(sex=="F")]<-"f"
+sex<-as.factor(as.character(sex))
+pData(BTIC_GBM_rep)$Sex<-sex
+
+
+str(pData(BTIC_GBM_rep))
+dim(BTIC_GBM_rep) # probes = 485577, samples = 13
+
+```
+
+
+### D. Preliminary plotting and exploratory analysis
+
+We will generate some preliminary exploratory plots of the data to check for possible outliers or batch effects.
+
+#### MDS Plots
+
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+par(cex = 0.7)
+plotSampleRelation (BTIC_GBM_rep,method = "mds", col = as.character (as.numeric (factor(BTIC_GBM_rep$Sentrix_ID))))
+# legend ("top", legend = levels (factor (HTT_Leavitt$Sentrix_ID)), fill = 1:nlevels (factor (HTT_Leavitt$Sentrix_ID)), horiz = T)
+```
+
+We can see that there doesn't appear to be much of a chip-to-chip effect.  
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+par(cex = 0.7)
+plotSampleRelation (BTIC_GBM_rep,method = "mds", col = as.character (as.numeric (factor(BTIC_GBM_rep$Batch))))
+# legend ("top", legend = levels (factor (HTT_Leavitt$Sentrix_ID)), fill = 1:nlevels (factor (HTT_Leavitt$Sentrix_I
+```
+
+We also observe minimal batch effects.
+
+
+#### Clustering of sample-to-sample correlations of genome-wide DNA methylation profiles
+
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+par(cex = 0.7)
+plotSampleRelation(BTIC_GBM_rep, method = "cluster")
+```
+
+As we suspected, 119_cell closely resembles the DNA methylation profile of 106_cell while 94_cell resembles 100_cell. Oddly 73_cell_rep more closely clusters with 12_cell and 12_cell_rep than 73_cell. Is is possible that these samples were mislabeled or perhaps experienced cross-contamination? 
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+batchCol<- as.factor(as.numeric(factor(BTIC_GBM_rep$Batch)))
+batchCol<-gsub("1", "orange", gsub("2", "forestgreen", batchCol))
+sentrixCol <- as.character(as.numeric(factor(BTIC_GBM_rep$Sentrix_ID)))
+
+
+BuPu <- colorRampPalette(brewer.pal(n = 9, "BuPu"))
+
+cor <- cor(betas(BTIC_GBM_rep), use = "pairwise.complete.obs")
+
+heatmap.2(cor,main = "Correlation of samples - 485,577 probes",
+          trace = "none", col = BuPu, dendrogram = "both",
+          RowSideColors = sentrixCol, cexRow = 1,
+          ColSideColors = batchCol, cexCol = 1,
+          keysize = 1)
+```
+
+The 9 different chips are coloured by the side bar while the top bar specifies batch (orange is Batch 1 while green is Batch 2).
+
+##### Clustering based on sample-to-sample correlation of 65 SNP probes
+
+
+```{r fig.width=12, fig.height=10, echo=FALSE}
+BTIC_GBM_rep.rs <- BTIC_GBM_rep[substring(featureNames(BTIC_GBM_rep), 1, 2) == "rs", ] 
+dim(BTIC_GBM_rep.rs) # SNP probes = 65, n = 13
+plotSampleRelation(BTIC_GBM_rep.rs,method="cluster", cex=0.7)
+```
+
+Similar to what we saw with the clustering of the genome-wide DNA methylation profiles, 119_cell matches the SNP profile of 106_cell while 94_cell resembles 100_cell. These represent sample label errors (tracked them back to patient label errors from Weiss group). Also, as before, 73_cell_rep more closely clusters with 12_cell and 12_cell_rep than 73_cell. Is is possible that these samples were mislabeled or perhaps experienced cross-contamination? Need to inquire about how these cells were cultured.
+
+#### Checking sex label matches XY probe profiles
+
+```{r echo=FALSE}
+
+BTIC_GBM_rep <- BTIC_GBM_rep[!fData(BTIC_GBM_rep)$CHR%in%c("X", "Y"), ]
+dim(BTIC_GBM_rep) # probes = 473,864, n = 109
+# save(BTIC_GBM_rep, file = "BTIC_GBM_rep(noXY).RData")
+# save(BTIC_GBM_rep.xy, file = "BTIC_GBM_rep(XY).RData")
+```
+
+
+```{r eval=F}
+BTIC_GBM_rep.xy <- BTIC_GBM_rep[fData(BTIC_GBM_rep)$CHR%in%c("X", "Y"), ]
+dim(BTIC_GBM_rep.xy) # probes = 11,648, n = 13
+SexCol <- as.numeric(factor(BTIC_GBM_rep$Sex))
+SexCol <- gsub("1", "deeppink",  gsub("2", "dodgerblue", SexCol))
+cor <- cor(betas(BTIC_GBM_rep.xy), use = "pairwise.complete.obs")
+
+heatmap.2(cor,main = "Correlation of samples - XY probes",
+          trace = "none", col = BuPu, dendrogram = "both",
+          cexRow = 1,
+          ColSideColors = SexCol, cexCol = 1,
+          keysize = 1)
+legend("topright", legend = c("Female", "Male"),fill = c("deeppink","dodgerblue"), horiz = T)
+```
+
+![Sample-to-Sample Clustering based on XY probes](XY_cluster.png)
+
+We can clearly see that 100_cell (which clusters with 94_cell) is mislabeled as male when it is actually female. Likewise, 106_cell (which clusters with 119_cell) is mislabeled as male when it is actually female. This indicates a true sample label swap that is needed for these two mislabled samples. 
+
+#### Beta value distributions
+
+```{r echo = FALSE}
+# all samples
+matdensity(betas(BTIC_GBM_rep), groupFactor = pData(BTIC_GBM_rep)$Batch, xlab = "Beta Values", ylab = "Density", brewer.n = 8, brewer.name = "Dark2", main = "Beta Value Distributions of Raw Data (coloured by Batch)")
+
+# replicate 67 beta value distribution
+matdensity(betas(BTIC_GBM_rep[,c("67_cell", "67_cell_rep")]), groupFactor = pData(BTIC_GBM_rep)$Batch, xlab = "Beta Values", ylab = "Density", brewer.n = 8, brewer.name = "Dark2", main = "Beta Value Distributions of 67_cell Replicate Raw Data (coloured by Batch)")
+
+# replicate 147 beta value distribution
+matdensity(betas(BTIC_GBM_rep[,c("147_cell", "147_cell_rep")]), groupFactor = pData(BTIC_GBM_rep)$Batch, xlab = "Beta Values", ylab = "Density", brewer.n = 8, brewer.name = "Dark2", main = "Beta Value Distributions of 147_cell Replicate Raw Data (coloured by Batch)")
+
+# replicate 119_cell beta value distribution
+matdensity(betas(BTIC_GBM_rep[,c("119_cell", "106_cell")]), groupFactor = pData(BTIC_GBM_rep[,c("119_cell", "106_cell")])$Batch, xlab = "Beta Values", ylab = "Density", brewer.n = 8, brewer.name = "Dark2", main = "Beta Value Distributions of 119_cell Replicate Raw Data (coloured by Batch)")
+
+# replicate 94_cell beta value distribution
+matdensity(betas(BTIC_GBM_rep[,c("94_cell", "100_cell")]), groupFactor = pData(BTIC_GBM_rep[,c("94_cell", "100_cell")])$Batch, xlab = "Beta Values", ylab = "Density", brewer.n = 8, brewer.name = "Dark2", main = "Beta Value Distributions of 94_cell Replicate Raw Data (coloured by Batch)")
+
+# replicate 12_cell beta value distribution
+matdensity(betas(BTIC_GBM_rep[,c("12_cell", "12_cell_rep")]), groupFactor = pData(BTIC_GBM_rep[,c("12_cell", "12_cell_rep")])$Batch, xlab = "Beta Values", ylab = "Density", brewer.n = 8, brewer.name = "Dark2", main = "Beta Value Distributions of 12_cell Replicate Raw Data (coloured by Batch)")
+
+# replicate 73_cell beta value distribution
+matdensity(betas(BTIC_GBM_rep[,c("73_cell", "73_cell_rep")]), groupFactor = pData(BTIC_GBM_rep[,c("73_cell", "73_cell_rep")])$Batch, xlab = "Beta Values", ylab = "Density", brewer.n = 8, brewer.name = "Dark2", main = "Beta Value Distributions of 73_cell Replicate Raw Data (coloured by Batch)")
+```
+
+
+#### Compute correlation of technical replicates
+
+```{r }
+RepCor  <- function(x,y) {
+  sRep <- x[, sampleNames(x)%in%y]
+  cor.dat<- cor(betas(sRep), use = "pairwise.complete.obs")
+  return(result = cor.dat[1, 2])
+}
+
+sampleNames(BTIC_GBM_rep)
+##  define within batch 1 technical replicates
+batch1.rep.67<-c("67_cell", "67_cell_rep")
+batch1.rep.147<-c("147_cell", "147_cell_rep")
+
+
+## define cross chip technical replicates
+cross_batch_rep_119<-c("119_cell", "106_cell")
+cross_batch_rep_94<-c("94_cell", "100_cell")
+cross_batch_rep_12<-c("12_cell", "12_cell_rep")
+cross_batch_rep_73<-c("73_cell", "73_cell_rep")
+
+
+
+## compute correlations for raw data
+# Within within chip technical replicates
+(cor.batch1.rep.67<-RepCor(BTIC_GBM_rep, batch1.rep.67)) # 0.9892471
+(cor.batch1.rep.147<-RepCor(BTIC_GBM_rep, batch1.rep.147)) # 0.9976804
+# (avg.chip1.reps<-mean(c(cor.chip.1.reps, cor.chip.2.reps))) # 0.997905
+
+# Within cross chip technical replicates
+(cor.cross_batch_rep_119<-RepCor(BTIC_GBM_rep, cross_batch_rep_119)) # 0.9818712
+(cor.cross_batch_rep_94<-RepCor(BTIC_GBM_rep, cross_batch_rep_94)) # 0.9398774
+(cor.cross_batch_rep_12<-RepCor(BTIC_GBM_rep, cross_batch_rep_12)) # 0.9911441
+(cor.cross_batch_rep_73<-RepCor(BTIC_GBM_rep, cross_batch_rep_73)) # 0.919932
+
+
+# (cor.ave_rep<-RepCor(DPD_Pilot, ave_rep)) # 0.9981296
+# (avg.cross.chip.reps<-mean(c(cor.fpd_rep, cor.ave_rep))) # 0.9980836
+```
+
+
+## Questions for Alice:
+
+1) Provide passage numbers for all of these replicate samples (at least should know dates when samples were harvested for DNA extraction and time lapse between replicate harvests)
+2) Could 73_cell_rep been mislabeled or contaminated with 12_cell?
+3) What could be the reason for the low correlation (0.93) between 94_cell and 100_cell?
+
+*Update*: Had a google hangout session to discuss the above questions with Alice on January 27, 2017. To recap what we discussed:
+
+1) No technical replicates were run for this project (on either batch 1 or batch 2) so we don't have a direct assessment of technical variation from these samples. However, a potential workaround may be to use a measure of concordance between other 450K technical replicates run by the Kobor Lab.
+2) For the sample mis-labelled samples (119_cell matches 106_cell; 94_cell matches 100_cell), will go back to look at SNP probes from the other tissues (blood, tumour, etc) to see which was the originating individual for the samples.
+3) Certain BTICs (specifically, 12, 73, 53 and 48) were cultured without growth factors while all other BTICs were cultured in the presence of EGF and fGF in a custom  neural stem cell media prepared by the Weiss lab. Will look to see if DNA methylation is associated with differential culture conditions.
+4) For 12_cell, the two replicates were taken 1 month apart and likely had 3 passages in between (since it is the fastest growing BTIC line). However, it's cross-batch replicate correlation is 0.991 signifying low batch variation and low passage-to-passage effects. Similarly, for 147_cell (another fast growing line which is passaged every 10 days), the replicates were taken 3 months apart, having gone through ~ 9 passagings but their within-batch 1 replicates have a correlation of 0.996, again signifying low technical and passage-induced variation.
+
+#### SNP probe clustering of all tissue types from mis-matched samples
+
+```{r}
+# save(BTIC_GBM, file = "BTIC_GBM.all.raw.RData")
+# save(BTIC_GBM.2, file = "BTIC_GBM.all.raw.2.RData")
+
+# load original methylumi objects created
+load("BTIC_GBM.all.raw.RData")
+
+
+dim(BTIC_GBM) # probes = 485,577, n = 128
+(tissues_119<-grep("119", sampleNames(BTIC_GBM), value=TRUE))
+(tissues_106<-grep("106", sampleNames(BTIC_GBM), value=TRUE))
+(tissues_106<-grep("100", sampleNames(BTIC_GBM), value=TRUE))
+(tissues_94<-grep("94", sampleNames(BTIC_GBM), value=TRUE))
+(tissues_73<-grep("73", sampleNames(BTIC_GBM), value=TRUE))
+samples_of_interest<-c("119_blood","119_cell","119_tumour", "106_tumour", "106_cell",   "106_blood","100_cell_rep", "100_tumour","100_blood","100_cell","94_tumour",  "94_cell",    "94_blood","67_cell", "67_cell_rep", "147_cell", "147_cell_rep", "12_cell", "12_cell_rep", "73_cell", "73_cell_rep", "73_blood", "73_tumour")
+dim(BTIC_GBM_sub<-BTIC_GBM[,sampleNames(BTIC_GBM)%in%samples_of_interest])
+BTIC_GBM_sub.rs <- BTIC_GBM_sub[substring(featureNames(BTIC_GBM_sub), 1, 2) == "rs", ] 
+dim(BTIC_GBM_sub.rs) # SNP probes = 65, n = 23
+plotSampleRelation(BTIC_GBM_sub.rs,method="cluster", cex=0.7)
+
+
+
+```
+
+We can clearly see that 100_cell clusters with the 94 sample set while 106_cell clusters with 119 sample set. We can also see that 73_cell and 73_cell_rep are more similar to 12_cell group, suggesting potential cross-contamination of these BTIC lines (more so 73_cell_rep). 
+

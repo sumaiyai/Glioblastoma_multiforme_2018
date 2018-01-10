@@ -1,0 +1,475 @@
+BTIC_GBM Preprocessing 
+========================================================
+## Author: Sumaiya Islam
+## Date: December 3, 2015
+
+### A. Set up wd & packages
+
+We will initially set our working directory and load our libraries.
+```{r include = FALSE, echo=FALSE}
+library(methylumi)
+library(gplots)
+library(marray)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(xtable)
+```
+
+The **methylumi** package is required for loading and manipulating the Illumina methylation data. It is built to contain sample information, feature information, and multiple matrices of data (beta and transformed M-values) along with background correction and quality control features.
+
+The **lumi** package is also important for processing Illumina 27K and 450K methylation microarray data. 
+
+### B. Load files
+
+Four files are required for our analysis:
+- **sampleFile** contains all the sample information and variables. It can be produced in Excel. The variables contained in our study include tissue, sex, age of onset, Sentrix ID (chip barcode) and Sentrix Position (row and column position on the chip), etc. The sampleFile must contain a "SampleID" column which is the same as sample ID, except without "rep" for replicates in order to utilize the methylumi and lumi packages.
+- **allFile** is generated in GenomeStudio.  It contains all probe annotation information (both Illumina's and reannotation file produced in Price et al. 2013 *Epigenetics*), and the following subcolumns for all samples: average beta, detection Pval, signal A, and signal B
+- **betaFile** is generated in GenomeStudio.  It contains all probe annotation information, and all samples with only the average beta subcolumn.
+- **qcFile** is generated in GenomeStudio (under the Control Probes profile).  It shows all samples (i.e. all columns), plus subcolumns: signal Grn, signal Red, and detection Pval.
+
+### Note: Quality control steps for colour correction and background subtraction have been performed in GenomeStudio using invariant control probes. The corrected data were exported in the above-mentioned files. 
+
+```{r echo=FALSE}
+# sampleFile <- ("BTIC_GBM_Samplesheet_May_2015.txt")  
+# allFile <- ("BTIC_GBM_alldata.txt") 
+# betaFile <- ("BTIC_GBM_avgbeta.txt") 
+# qcFile <- ("BTIC_GBM_qcfile.txt") 
+# 
+# file.exists(allFile)
+# file.exists(betaFile)
+# file.exists(qcFile)
+# file.exists(sampleFile)
+```
+
+Next, we'll make the BTIC_GBM project (and BTIC_GBM.2):
+
+```{r echo=FALSE}
+# BTIC_GBM<- lumiMethyR(allFile)
+# BTIC_GBM.2 <- methylumiR(betaFile, qcfile = qcFile)
+
+# load original methylumi objects created
+load("BTIC_GBM.RData")
+load("BTIC_GBM.2.RData")
+
+BTIC_GBM # probes = 485,577, n = 128
+BTIC_GBM.2 # probes = 485,577, n = 128
+```
+
+The function *lumiMethyR()* coerces the object (**allFile**) into a **MethyLumiM class object**, which contains those four elements (exprs, methylated, unmethylated, and detection p value).
+
+The function *methylumiR()* coerces the object (**betaFile**) into a **MethyLumiSet class object**, which holds the intensities and the beta values.  This is also where the sample information (the sampleFile) can be added as phenoData.
+BTIC_GBM.2 contains the information from the control probes, as well as the average beta values for all probes.
+
+### C. Add metadata to BTIC_GBM
+
+```{r echo=FALSE}
+# load and check sample names of original samplesheet from May 2015
+sampleFile <- ("BTIC_GBM_Samplesheet_May_2015.txt") # original samplesheet from May 2015
+str(sampleInfo <- read.delim(sampleFile,row.names=1,stringsAsFactors=F)) 
+stopifnot(all(sampleNames(BTIC_GBM)%in%rownames(sampleInfo)))
+
+
+# load and check sample names of revised (updated) samplesheet from Sept 2015
+sampleFile.rev<-("BTIC_GBM_Samplesheet_Updated_Sept_2015.txt") # revised, updated samplesheet from Sept 2015
+str(sampleInfo.rev <- read.delim(sampleFile.rev,row.names=1,stringsAsFactors=F))
+stopifnot(all(sampleNames(BTIC_GBM)%in%rownames(sampleInfo.rev)))
+
+
+# re-order revised samplesheet according to sample name order of original samplesheet
+sampleInfo.rev.or<-sampleInfo.rev[match(rownames(sampleInfo), rownames(sampleInfo.rev)),]
+identical(rownames(sampleInfo), rownames(sampleInfo.rev.or)) # TRUE
+
+# re-structure revised samplesheet's variables
+sampleInfo.rev.or <- sampleInfo.rev.or[sampleNames(BTIC_GBM),]
+str(sampleInfo.rev.or)
+sampleInfo.rev.or$Sample_Group<-as.factor(sampleInfo.rev.or$Sample_Group)
+sampleInfo.rev.or$Sentrix_ID<-as.factor(sampleInfo.rev.or$Sentrix_ID)
+sampleInfo.rev.or$Batch<-as.factor(sampleInfo.rev.or$Batch)
+sampleInfo.rev.or$Sex<-as.factor(sampleInfo.rev.or$Sex)
+# for Row
+for (i in 1:nrow(sampleInfo.rev.or)){
+  sampleInfo.rev.or$Row[i]<-paste(substr(sampleInfo.rev.or[i,"Sentrix_Position"], start=1, stop=3))
+}
+sampleInfo.rev.or$Row<- as.factor(sampleInfo.rev.or$Row)
+
+# input revised samplesheet in pData of BTIC_GBM methylumi object
+str(pData(BTIC_GBM) <- sampleInfo.rev.or)
+```
+
+First, we've read the sampleFile and made it into a matrix.  The first row of sampleFile becomes the row names of sampleInfo.  The **stringsAsFactors** argument specifies whether R should keep character variables as they are (= FALSE), or to convert them to factors (= TRUE).
+
+We then perform a sanity check to ensure all BTIC_GBM sample names are equivalent to sampleInfo row names.
+Next, the sampleInfo is reordered to match the sample names of BTIC_GBM. This is important because we are merging sampleInfo and BTIC_GBM: sampleInfo becomes BTIC_GBM's pData (or phenoData, i.e. the phenotypic information about samples in BTIC_GBM)
+
+```{r echo=FALSE}
+BTIC_GBM <- BTIC_GBM[, order(BTIC_GBM$Sentrix_ID)]
+# write.csv(cor(betas(BTIC_GBM), use = 'pairwise.complete.obs'), file='C.01 - all sample intercorrelation.csv')
+```
+
+We chose to re-order BTIC_GBM by Sentrix ID (array chip barcode number), but this could be done for other variables.
+
+We will now subset our methylumi object based on tissue type to generate BTIC_GBM and BTIC_GBM. These objects will be examined and utilized in subsequent analyses.
+
+### D. Saving BTIC_GBM and BTIC_GBM.2
+
+```{r echo=FALSE}
+# save(BTIC_GBM, file ='BTIC_GBM.RData')
+# save(BTIC_GBM.2, file ='BTIC_GBM.2.RData')
+```
+
+### E. Remove mis-matched samples and samples selected for exclusion
+
+##### September 2015: Based on the 65 SNP probes on the 450K array, we identified a number of mis-matched samples which we designated for removal from our dataset. Specifically, the following was done:
+
+1) Omit 106_cell, 106_blood and 106_tumour set
+2) Omit 100_cell (rep of 94_cell)
+3) Omit 157_cell, 157_blood and 157_tumour set
+4) Omit 159_cell
+5) Omit 63_cell, 63_blood and 63_tumour set
+6) Swap sample labels for 156_cell and 169_cell
+
+##### November 2015: As suggested from Artee Luchman (Weiss lab), the following samples were selected for removal from analysis as they different glioma subtypes with only n = 1 from each type. Specifically, the following samples were excluded:
+
+1) Omit 142_blood, 142_cell, 142_cell_het, 142_tumour (oligastrocytoma samples)
+2) Omit 169_blood, 169_cell, 169_tumour (gliosarcoma samples)
+3) Omit 92_cell (recurrent glioblastoma; limited info available)
+
+```{r echo=FALSE}
+# Omit 106_cell, 106_blood, 106_tumour, 100_cell, 157_cell, 157_blood, 157_tumour, 159_cell, 63_cell, 63_blood, 63_tumour, 142_blood, 142_cell, 142_cell_het, 142_tumour, 169_blood, 169_tumour, 92_cell
+samples.to.remove<-c("106_cell", "106_blood", "106_tumour", "100_cell", "157_cell", "157_blood", "157_tumour", "159_cell", "63_cell", "63_blood", "63_tumour", "142_blood", "142_cell", "142_cell_het", "142_tumour", "169_blood", "169_tumour", "92_cell")
+BTIC_GBM.rev <- BTIC_GBM[,!(sampleNames(BTIC_GBM))%in%samples.to.remove] 
+BTIC_GBM.rev.2 <- BTIC_GBM.2[,!(sampleNames(BTIC_GBM.2))%in%samples.to.remove] 
+
+
+# Swap sample labels for 156_cell and 169_cell
+# in BTIC_GBM.rev
+samplenames<-sampleNames(BTIC_GBM.rev)
+samplenames[which(samplenames=="156_cell")]<-"169_cellA"
+samplenames[which(samplenames=="169_cell")]<-"156_cell"
+samplenames[which(samplenames=="169_cellA")]<-"169_cell"
+sampleNames(BTIC_GBM.rev)<-samplenames
+# in BTIC_GBM.rev.2
+
+samplenames<-sampleNames(BTIC_GBM.rev.2)
+samplenames[which(samplenames=="156_cell")]<-"169_cellA"
+samplenames[which(samplenames=="169_cell")]<-"156_cell"
+samplenames[which(samplenames=="169_cellA")]<-"169_cell"
+sampleNames(BTIC_GBM.rev.2)<-samplenames
+BTIC_GBM.2.or <- BTIC_GBM.rev.2[,sampleNames(BTIC_GBM.rev)]
+identical(sampleNames(BTIC_GBM.rev), sampleNames(BTIC_GBM.2.or))
+
+
+# remove 169_cell sample
+sample.remove<-c("169_cell")
+BTIC_GBM.revised <- BTIC_GBM.rev[,!(sampleNames(BTIC_GBM.rev))%in%sample.remove] 
+BTIC_GBM.revised.2 <- BTIC_GBM.2.or[,!(sampleNames(BTIC_GBM.2.or))%in%sample.remove]
+identical(sampleNames(BTIC_GBM.revised), sampleNames(BTIC_GBM.revised.2))
+```
+
+Re-structure meta data in revised methylumi objects
+
+```{r, echo=FALSE}
+# re-code "cell_r"" entries in Sample_Group as just "cell"
+pData(BTIC_GBM.revised)$Sample_Group<-as.character(pData(BTIC_GBM.revised)$Sample_Group)
+Sample_Group<-pData(BTIC_GBM.revised)$Sample_Group
+Sample_Group[which(Sample_Group=="cell_r")]<-"cell"
+pData(BTIC_GBM.revised)$Sample_Group<- Sample_Group
+pData(BTIC_GBM.revised)$Sample_Group<-as.factor(pData(BTIC_GBM.revised)$Sample_Group)
+
+# re-code sex as factor
+sex<-pData(BTIC_GBM.revised)$Sex
+sex[which(sex=="F")]<-"f"
+sex<-as.factor(as.character(sex))
+pData(BTIC_GBM.revised)$Sex<-sex
+
+
+# re-code 156_cell as "gbm_r" instead of "gs" (since 156_cell and 169_cell were swapped)
+pData(BTIC_GBM.revised)$Diagnosis<-as.character(pData(BTIC_GBM.revised)$Diagnosis)
+diagnosis<-pData(BTIC_GBM.revised)$Diagnosis
+diagnosis[which(diagnosis=="gs")]<-"gbm_r"
+pData(BTIC_GBM.revised)$Diagnosis<- diagnosis
+pData(BTIC_GBM.revised)$Diagnosis<-as.factor(pData(BTIC_GBM.revised)$Diagnosis)
+
+
+str(pData(BTIC_GBM.revised))
+dim(BTIC_GBM.revised) # probes = 485577, samples = 109
+dim(BTIC_GBM.revised.2) # probes = 485577, samples = 109
+
+# save(BTIC_GBM.revised, file ='BTIC_GBM.Rev.RData')
+# save(BTIC_GBM.revised.2, file ='BTIC_GBM.Rev.2.RData')
+```
+
+
+### F. Preliminary plotting and exploratory analysis
+
+We will generate some preliminary exploratory plots of the data to check for possible outliers or batch effects.
+
+First we plot the sample relations based on MDS (multidimensional scaling) in order to visually investigate the data. We initially color the data according to Sentrix ID in order to assess possible batch effects. We then do a similar assessment, coloring the samples by Sample_Group (which is the tissue source) to investigate any obvious differences from our main variable of interest:
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+par(cex = 0.7)
+plotSampleRelation (BTIC_GBM.revised,method = "mds", col = as.character (as.numeric (factor(BTIC_GBM.revised$Sentrix_ID))))
+# legend ("top", legend = levels (factor (HTT_Leavitt$Sentrix_ID)), fill = 1:nlevels (factor (HTT_Leavitt$Sentrix_ID)), horiz = T)
+```
+
+We can see that there doesn't appear to be much of a chip-to-chip effect.  
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+par(cex = 0.7)
+plotSampleRelation (BTIC_GBM.revised,method = "mds", col = as.character (as.numeric (factor(BTIC_GBM.revised$Batch))))
+# legend ("top", legend = levels (factor (HTT_Leavitt$Sentrix_ID)), fill = 1:nlevels (factor (HTT_Leavitt$Sentrix_I
+```
+
+We also observe minimal batch effects.
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+tissueCol <- as.numeric(factor(BTIC_GBM.revised$Sample_Group))
+tissueCol <- gsub("1", "red",  gsub("2", "forestgreen", gsub("3", "blue", tissueCol)))
+
+par(cex = 0.7)
+plotSampleRelation(BTIC_GBM.revised, method = "mds", col = tissueCol)
+legend("top", legend = c("Blood", "BTIC", "Tumour"),fill = c("red", "forestgreen", "blue"), horiz = T)
+```
+
+It is apparent that tissue differences (ie blood vs tumour vs BTIC cell line) comprise a substantial proportion of the variance in the pre-processed methylation data (specified by principal component 1). This is expected given that different cell types are epigenetically distinct and accordingly, exhibit differential methylation profiles. 
+
+We also produce a dendogram of the samples as another way to visualize possible tissue/cell effects.
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+par(cex = 0.7)
+plotSampleRelation(BTIC_GBM.revised, method = "cluster")
+```
+
+It is apparent that the tissue differences largely drive the clustering in the DNA methylation data whereby blood, tumour and BTIC cell line samples cluster into distinct groups. Note that some tumour samples (169_tumour, 69_tumour and 126_tumour) cluster in the blood group; it is likely that these surgically-resected tumour samples have a high degree of blood contamination. Also, 248_tumour clusters alongside its corresponding BTIC cell line sample in the BTIC cluster. 
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+sentrixCol <- as.character (as.numeric(factor(BTIC_GBM.revised$Sentrix_ID)))
+
+
+BuPu <- colorRampPalette(brewer.pal(n = 9, "BuPu"))
+
+cor <- cor(betas(BTIC_GBM.revised), use = "pairwise.complete.obs")
+
+heatmap.2(cor,main = "Correlation of samples - 485,577 probes",
+          trace = "none", col = BuPu, dendrogram = "both",
+          RowSideColors = sentrixCol, cexRow = 1,
+          ColSideColors = tissueCol, cexCol = 1,
+          keysize = 1)
+legend("topright", legend = c("Blood", "BTIC", "Tumour"),fill = c("red", "forestgreen", "blue"), horiz = T)
+legend ("topleft", legend = levels (factor (BTIC_GBM.revised$Sentrix_ID)), fill = 1:nlevels (factor (BTIC_GBM.revised$Sentrix_ID)), horiz = T)
+```
+
+There is an obvious differential in methylation patterns based on tissue type (blood vs tumour vs. BTIC cells). There does not appear to be any considerable chip-to-chip effects as denoted by the randomization of chips (shown in various colours). 
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+batchCol <- as.numeric(factor(BTIC_GBM.revised$Batch))
+batchCol <- gsub("1", "orange",  gsub("2", "purple", batchCol))
+
+BuPu <- colorRampPalette(brewer.pal(n = 9, "BuPu"))
+
+cor <- cor(betas(BTIC_GBM.revised), use = "pairwise.complete.obs")
+
+heatmap.2(cor,main = "Correlation of samples - 485,577 probes",
+          trace = "none", col = BuPu, dendrogram = "both",
+          RowSideColors = batchCol, cexRow = 1,
+          ColSideColors = tissueCol, cexCol = 1,
+          keysize = 1)
+legend("topright", legend = c("Blood", "BTIC", "Tumour"),fill = c("red", "forestgreen", "blue"), horiz = T)
+legend ("topleft", legend = levels (factor (BTIC_GBM.revised$Batch)), fill = 1:nlevels (factor (BTIC_GBM.revised$Batch)), horiz = T)
+```
+Again, there does not appear to be any considerable batch effects (shown in orange and purple). 
+
+### G. Probe Filtering
+
+##### Removal of SNP Probes
+
+Here we create a sub-project, **BTIC_GBM.revised.rs**, containing only information for the probes that are on single-nucleotide polymorphisms (SNPs (n = 65)).  We then remove these probes from **BTIC_GBM.revised**. We remove the SNP probes as they are used as an internal control to ensure your samples are what you think they are and are not used for any methylation analysis.
+
+```{r echo=FALSE}
+BTIC_GBM.revised.rs <- BTIC_GBM.revised[substring(featureNames(BTIC_GBM.revised), 1, 2) == "rs", ] 
+dim(BTIC_GBM.revised.rs) # SNP probes = 65, n = 109
+BTIC_GBM.revised <- BTIC_GBM.revised[substring(featureNames(BTIC_GBM.revised),1,2) != "rs", ]
+dim(BTIC_GBM.revised) # probes = 485,512, n = 109
+# save(BTIC_GBM.revised, file = "BTIC_GBM.revised(noRS).RData") 
+# save(BTIC_GBM.revised.rs, file = "BTIC_GBM.revised(RS).RData")
+```
+
+This cluster plot observes the samples based on the 65 SNP probes alone (i.e. uses the BTIC_GBM.revised.rs project)
+
+```{r fig.width=12, fig.height=10, echo=FALSE}
+plotSampleRelation(BTIC_GBM.revised.rs,method="cluster", cex=0.7)
+```
+
+Most of the matched samples cluster together based on the 65 SNP probes as we expect. However, we see that 189_cell seems to cluster closely with the 248 set. This makes sense because according to Artee (Weiss lab), BT189 comes from a newly diagnosed GBM tumour while 248 set represents the recurrent tumour in the same individual. In addition, 12_cell/12_cell_rep clusters closely with the 73 set. Could these also perhaps be recurrent tumour cell line samples? Will need to check.
+
+##### Removal of XY Probes
+
+Now we do the same thing for probes located on the X and Y chromosomes.  The mini project **BTIC_GBM.revised.xy** will contain only 11,648 probes; these are the probes we will remove from **BTIC_GBM.revised**. We remove probes located on the X and Y chromosome in this analysis because unlike autosomes, sex chromosomes are not in equal number between females (XX) and males (XY) and if your cohort is not sex matched you will have a disproportionate number of X vs Y chromosomes present in your analysis throwing off the data of those probes.
+
+```{r echo=FALSE}
+BTIC_GBM.revised.xy <- BTIC_GBM.revised[fData(BTIC_GBM.revised)$CHR%in%c("X", "Y"), ]
+dim(BTIC_GBM.revised.xy) # probes = 11,648, n = 109
+BTIC_GBM.revised <- BTIC_GBM.revised[!fData(BTIC_GBM.revised)$CHR%in%c("X", "Y"), ]
+dim(BTIC_GBM.revised) # probes = 473,864, n = 109
+# save(BTIC_GBM.revised, file = "BTIC_GBM.revised(noXY).RData")
+# save(BTIC_GBM.revised.xy, file = "BTIC_GBM.revised(XY).RData")
+```
+
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+SexCol <- as.numeric(factor(BTIC_GBM.revised$Sex))
+SexCol <- gsub("1", "gray",  gsub("2", "deeppink", gsub("3", "dodgerblue", SexCol)))
+par(cex = 0.7)
+plotSampleRelation(BTIC_GBM.revised.xy, method = "mds", col = SexCol)
+legend("top", legend = c("Female", "Male", "NA"),fill = c("deeppink","dodgerblue", "gray"), horiz = T)
+```
+
+Shown above is the MDS plot of the xy probe methylation data. We can see a distinct separation between males and females. Of note, 76_cell is mis-labeled as female (is actually male). All the unknown samples are actually male. We will update the meta data sex variable accordingly. 
+
+```{r, echo=FALSE}
+sex<-as.character(pData(BTIC_GBM.revised)$Sex)
+sex<- c("f", "f", "m",  "f", "f", "m", "m", "m", "m", "m", "f", "f", "m", "m", "m", "f", "f", "f", "m", "m", "m", "m", "m", "m",  "f","m", "m", "m", "m", "m", "f", "m", "f", "m", "m", "m", "m", "m", "f", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "f","m", "m", "m", "m",  "f", "m", "m", "f", "m", "m", "m", "m", "m", "m", "m", "f", "f", "m", "m", "m", "m", "m", "m", "f", "m","m", "m", "m", "m", "m", "m", "m", "m", "f", "m", "m", "f", "m", "f", "f", "m", "f", "m", "m", "m", "m", "m", "m", "m", "m","m", "m", "f","m", "m", "m", "f", "m", "f")
+sex<-as.factor(as.character(sex))
+pData(BTIC_GBM.revised)$Sex<-sex
+
+SexCol <- as.numeric(factor(BTIC_GBM.revised$Sex))
+SexCol <- gsub("1", "deeppink", gsub("2", "dodgerblue", SexCol))
+par(cex = 0.7)
+plotSampleRelation(BTIC_GBM.revised.xy, method = "mds", col = SexCol)
+legend("top", legend = c("Female", "Male"),fill = c("deeppink","dodgerblue"), horiz = T)
+```
+After re-coding the sex variable, we can see that there are no sex mismatches in the data according to the XY probe PCA groupings. 
+
+
+### H. Filtering out "bad" probes
+
+```{r echo=FALSE, include=FALSE}
+all(featureNames(BTIC_GBM.revised)%in%featureNames(BTIC_GBM.revised.2))
+all(sampleNames(BTIC_GBM.revised)%in%sampleNames(BTIC_GBM.revised.2))
+```
+
+
+##### Missing beta values
+
+We are looking for probes where there was no average beta value (the measure of methylation) calculated by GenomeStudio. This is done when GenomeStudio detects intensity values from less than three beads for a given probe. There are multiple beads on the array as a means of obtaining technical replicates and so probes which have fewer than three beads representing it is called as an NA.
+**avgbeta** is a matrix of the beta values for each sample at each probe. 
+**badAvgbeta** is a logical matrix that shows which probes have NAs for which samples.
+From this we make **nbadAvgbeta**, which sums up the number of "TRUE"'s for each row.  Our threshold is 1 badAvgbeta for a probe to be removed.
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+avgbeta <- betas(BTIC_GBM.revised.2)[featureNames(BTIC_GBM.revised),sampleNames(BTIC_GBM.revised)]
+badAvgbeta <- is.na(avgbeta)
+nbadAvgbeta <- print(sum(rowSums(badAvgbeta)>=1))  #18,861
+
+dotchart(colSums(badAvgbeta), cex=0.8, main = paste("Bad Avg Beta"))
+```
+
+This dot chart is shows how many probes are defined as having a "bad average beta value" by the threshold we specified above. As a general rule of thumb a sample has to have more than 10% (40,000) of probes deemed "bad" before it is considered for removal. Our worst sample has only ~600 probes with a bad average beta value. Here we have identified 18,861 probes with a bad average beta value using thresholds defined above. 
+
+##### Bad detection p-values
+
+**Detection p-values:** the confidence that the signal from the probe in question is more than the background (as defined by the negative control probes on the Illumina array).  We set our p-value threshold to 0.01.
+
+First, we make the object **badDetP**, which is a logical matrix that lets you know which probes do not meet our p-value requirements for which samples (i.e. it is a 473,684 by 109 matrix).
+From this we make **nbadDetP**, which sums up the number of "TRUE"'s in each row (i.e. for each probe).  We have set a threshold of 1 badDetP (detection p-value >= 0.01) to label a probe as a "bad" probe - this means that any one probe had to not meet our p-value threshold for at least 1 of our 109 samples to be targeted for removal.
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+badDetP <- detection(BTIC_GBM.revised)>0.01
+nbadDetP <- print(sum(rowSums(badDetP)>=1)) #6754
+
+dotchart(colSums(badDetP),main=paste("Bad Det P"), cex = 0.4)
+```
+
+As stated above a sample has to contain about 10% of bad probes to consider removing it. Our worst sample has only ~1000. Here we have identified 6754 probes which have a bad detection P-value using thresholds defined above.
+
+
+##### Removing these bad probes
+
+```{r echo=FALSE}
+badProbes <- rowSums(badAvgbeta)>=1|rowSums(badDetP)>=1
+sum(badProbes)# badProbes = 25068
+BTIC_GBM.revised <- BTIC_GBM.revised[!badProbes,] 
+dim(BTIC_GBM.revised) # probes = 448796, n = 109
+# save (BTIC_GBM.revised, file= 'BTIC_GBM.revised(filtered).RData')
+```
+
+We then take out all probes identified above as having either a bad detection P-value or a bad average beta value or both. In total we have removed 25,068 "bad" probes from our study. 18,861 (badAvgbeta) + 6754 (badDetP) = 25,615 yet we removed only 25,068. This is because there were some probes identified which overlapped as having both bad average beta values and bad detection P-values. We have a total of 448,796 probes left in our analysis.
+
+##### Cross-hybridizing probes
+
+Some probes have been found to cross-hybridize with other chromosomes (Price et al. 2013 *Epigenetics*).  It is at the discretion of the user whether or not they want to remove these cross-hybridizing probes, since it isn't a guarantee that they will cross-hybridize every time the experiment is run.  Probes that cross-hybridize to the sex chromosomes are typically removed, as they run a higher risk of confounding the data than probes that cross-hybridize to autosomal chromosomes.  
+
+**snp_index** is a list of which probes do not contain SNPs. It is derived from fData(BTIC_GBM.revised)$n_SNPCpG, which is a matrix of how many SNPs are possible for that probe; if there's an NA that is good, because that means there's no SNP in that probe.  We then filter BTIC_GBM.revised, taking only the probes that were listed in **snp index**. We also remove probes which bind multiple locations in the genome as long as one of the locations is on the XY chromosome. The reason for this is as the X and Y chromosomes are not balanced amongst our samples (males vs females) we have to remove all probes which bind them so as to not skew the normalization. We do not remove multiple binders of probes which bind at various sites only in the autosomal chromosomal regions because they will most likely not skew our normalization and when we obtain our "hit list" we will verify them using pyrosequencing in order to determine if the specific site of interest is providing the signal we are seeing.
+
+```{r echo=FALSE}
+snp_index <- which(is.na(fData(BTIC_GBM.revised)$n_SNPCpG))
+(n.polymorphic.probes<-(length(featureNames(BTIC_GBM.revised))-length(snp_index))) # 18,393
+BTIC_GBM.revised <- BTIC_GBM.revised[snp_index, ] 
+dim(BTIC_GBM.revised) # probes = 430,403, n = 109
+xy_hit_index <- which(fData(BTIC_GBM.revised)$XY_Hits == "XY_NO")
+(n.XYcrosshybrid.probes<-(length(featureNames(BTIC_GBM.revised))-length(xy_hit_index))) # 10208
+BTIC_GBM.revised <- BTIC_GBM.revised[xy_hit_index, ] 
+dim(BTIC_GBM.revised) # probes = 420,195, n = 109
+# save(BTIC_GBM.revised, file = "BTIC_GBM.revised(filtered).RData")
+```
+
+We have removed 28,601 (18,393 polymorphic probes plus 10,208 XY cross-hybridizing probes) probes using the two filters described above. This leaves us with 420,195 probes for our analysis.
+
+We will produce one more MDS plot and correlation heatmap using fully filtered (colour-corrected/background-subtracted) data.
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+par(cex = 0.7)
+plotSampleRelation (BTIC_GBM.revised, method = "mds", col = as.character (as.numeric (factor (BTIC_GBM.revised$Sentrix_ID))))
+#legend ("top", legend = levels (factor (BTIC_GBM.revised.cortex$Sentrix_ID)), cex= 0.6, fill = 1:nlevels (factor (BTIC_GBM.revised.cortex$Sentrix_ID)), horiz = T)
+```
+
+We do not observe much of a chip-to-chip effect (or batch-to-batch effect). Nevertheless, we will definitely perform ComBat to minimize technical variation.
+
+```{r fig.width=8, fig.height=7, echo=FALSE}
+tissueCol <- as.numeric(factor(BTIC_GBM.revised$Sample_Group))
+tissueCol <- gsub("1", "red",  gsub("2", "forestgreen", gsub("3", "blue", tissueCol)))
+
+par(cex = 0.7)
+plotSampleRelation(BTIC_GBM.revised, method = "mds", col = tissueCol)
+legend("top", legend = c("Blood", "BTIC", "Tumour"),fill = c("red", "forestgreen", "blue"), horiz = T)
+```
+
+As before, most of the variation in the methylation data is due to tissue differences (blood vs tumour vs BTIC cell line). 
+
+```{r fig.width=12, fig.height=12}
+SexCol <- as.numeric(factor(BTIC_GBM.revised$Sex))
+SexCol <-  gsub("1", "deeppink", gsub("2", "dodgerblue", SexCol))
+
+BuPu <- colorRampPalette(brewer.pal(n = 9, "BuPu"))
+
+cor <- cor(betas(BTIC_GBM.revised), use = "pairwise.complete.obs")
+
+heatmap.2(cor,main = "Correlation of samples - 420,195 probes",
+          trace = "none", col = BuPu(256), dendrogram = "both",
+          RowSideColors = SexCol, cexRow = 0.8,
+          ColSideColors = tissueCol, cexCol = 0.8,
+          keysize = 1)
+legend("topright", bty="n", legend = c("Blood", "BTIC", "Tumour"),fill = c("red", "forestgreen", "blue"), horiz = T)
+legend("top", legend = c("Female", "Male"),fill = c("deeppink","dodgerblue"), horiz = T)
+```
+
+As before, most of the variation in the methylation data is due to tissue differences (blood vs tumour vs BTICs). 
+
+### Summary table of probe/sample filtering processes:
+Here is a table summarizing our probe filtering and pre-processing steps undertaken so far:
+
+```{r echo=FALSE}
+Filtered <- matrix(c("485,577", "128","Starting Probes","485,577", "109","Remove 19 mis-matched/extraneous samples", "485,512", "109","SNP Probes (65)", "473,864", "109","XY Probes (11,648)", "448,796", "109","Bad Probes (25,068)", "430,403", "109","Polymorphic Probes (18,393)", "420,195", "109","XY Cross-hybridizing (10,208)", "420,195", "109", "Final Filtered Dataset"),ncol=3,byrow=TRUE)
+colnames(Filtered) <- c("Probes","Samples","Filtering")
+rownames(Filtered) <- c("I","II","III", "IV", "V", "VI", "VII", "VIII")
+Filtered <- as.table(Filtered)
+print(Filtered)
+```
+
+```{r results='asis', echo=FALSE}
+print(xtable(Filtered, align=c("llcr")), type="html")
+```
+
+We will continue with the normalization process using the objects BTIC_GBM.revised.RData and BTIC_GBM.revised.2.RData
